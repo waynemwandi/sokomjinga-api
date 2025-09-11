@@ -13,14 +13,15 @@ settings = get_settings()
 app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
 
 # TODO: CORS
-# if settings.CORS_ORIGINS:
-#     app.add_middleware(
-#         CORSMiddleware,
-#         allow_origins=settings.CORS_ORIGINS,
-#         allow_credentials=True,
-#         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-#         allow_headers=["*"],
-#     )
+origins = [o.strip() for o in (settings.CORS_ORIGINS or "").split(",") if o.strip()]
+if origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
+    )
 
 
 @app.get("/", include_in_schema=False)

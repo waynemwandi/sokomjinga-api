@@ -1,12 +1,14 @@
 # app/core/config.py
 from functools import lru_cache
-from typing import List, Union
 
-from pydantic import AnyHttpUrl, field_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Application settings, loaded from environment variables or a .env file."""
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
     APP_NAME: str = "SokoMjinga API"
     ENV: str = "dev"  # dev | staging | prod
     DEBUG: bool = True
@@ -16,18 +18,8 @@ class Settings(BaseSettings):
     # TODO: Add DATABASE_URL here
     # DATABASE_URL: str = "mysql+pymysql://app:apppass@localhost:3306/sokomjinga"
 
-    CORS_ORIGINS: List[AnyHttpUrl] = []
-
-    @field_validator("CORS_ORIGINS", mode="before")
-    @classmethod
-    def split_csv(cls, v: Union[str, List[str]]) -> List[str]:
-        if isinstance(v, str):
-            return [s.strip() for s in v.split(",") if s.strip()]
-        return v
-
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
+    # CORS origins, comma-separated
+    CORS_ORIGINS: str = ""
 
 
 @lru_cache
