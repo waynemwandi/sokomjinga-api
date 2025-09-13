@@ -7,12 +7,13 @@ from fastapi.responses import HTMLResponse
 from fastapi.routing import APIRoute
 
 from app.api.health import router as health_router
+from app.api.markets import router as markets_router
 from app.core.config import get_settings
 
 settings = get_settings()
 app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
 
-# TODO: CORS
+# CORS
 origins = [o.strip() for o in (settings.CORS_ORIGINS or "").split(",") if o.strip()]
 if origins:
     app.add_middleware(
@@ -30,10 +31,11 @@ def root():
         {"rel": "docs", "href": "/docs"},
         # {"rel": "redoc", "href": "/redoc"},
         {"rel": "health", "href": "/health"},
+        {"rel": "markets", "href": "/markets"},
     ]
 
     # auto-list other GET routes (skip internals and param routes)
-    skip = {"/", "/docs", "/openapi.json", "/health"}
+    skip = {"/", "/docs", "/openapi.json", "/health", "/markets"}
     for route in app.routes:
         if isinstance(route, APIRoute) and "GET" in route.methods:
             path = route.path
@@ -50,3 +52,4 @@ def root():
 
 # Routers
 app.include_router(health_router)
+app.include_router(markets_router, prefix="/markets", tags=["markets"])

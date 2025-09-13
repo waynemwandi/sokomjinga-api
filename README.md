@@ -71,3 +71,14 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 # specify port
 - Implement auth (register, login)
 - Add wallet and order models
 - Dockerize and include in sokomjinga-iac
+
+## Alembic
+
+```sh
+alembic init alembic
+
+alembic revision --autogenerate -m "create markets table"
+
+alembic upgrade head
+
+```
