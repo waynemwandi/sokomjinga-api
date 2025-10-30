@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     APP_NAME: str = "SokoMjinga API"
-    ENV: str = "dev"  # dev | staging | prod
+    ENV: str = "dev"
     DEBUG: bool = True
     HOST: str = "0.0.0.0"
     PORT: int = 8000
@@ -19,23 +19,27 @@ class Settings(BaseSettings):
     # CORS origins, comma-separated
     CORS_ORIGINS: str = ""
 
-    # DB pieces for SQLAlchemy URL
-    DB_TYPE: str
-    DB_DRIVER: str
-    DB_HOST: str
+    # DB pieces (defaults silence editor warnings; real values come from .env)
+    DB_TYPE: str = ""
+    DB_DRIVER: str = ""
+    DB_HOST: str = ""
     DB_PORT: int = 3306
-    DB_USER: str
-    DB_PASS: str
-    DB_NAME: str
+    DB_USER: str = ""
+    DB_PASS: str = ""
+    DB_NAME: str = ""
+
+    # JWT / token settings (needed by security.py)
+    SECRET_KEY: str = "changeme"
+    JWT_ALG: str = "HS256"
+    ACCESS_EXPIRE_MIN: int = 60
+    REFRESH_EXPIRE_DAYS: int = 30
 
     @computed_field(return_type=str)
     @property
     def database_url(self) -> str:
-        # Compose URL from the pieces (no secrets hard-coded)
         return f"{self.DB_TYPE}+{self.DB_DRIVER}://{self.DB_USER}:{self.DB_PASS}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
 
 @lru_cache
 def get_settings() -> Settings:
-    # cached so we don’t reparse env repeatedly
     return Settings()

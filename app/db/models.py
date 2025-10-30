@@ -2,7 +2,16 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
 
 Base = declarative_base()
@@ -55,3 +64,46 @@ class Outcome(TimestampMixin, Base):
 outcomes: Mapped[list["Outcome"]] = relationship(
     back_populates="market", cascade="all, delete-orphan"
 )
+
+
+class User(TimestampMixin, Base):
+    __tablename__ = "users"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_id)
+    email: Mapped[str] = mapped_column(
+        String(255), nullable=False, unique=True, index=True
+    )
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_admin = mapped_column(Boolean, default=False, nullable=False)
+
+    profile: Mapped["UserProfile"] = relationship(
+        "UserProfile",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+    def __repr__(self) -> str:
+        return f"<User {self.email}>"
+
+
+class UserProfile(TimestampMixin, Base):
+    __tablename__ = "user_profiles"
+
+    # 1-to-1 via unique FK
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+
+    # Store phone in E.164 format: e.g. +2547XXXXXXXX (nullable until first top-up)
+    phone_e164: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, unique=True, index=True
+    )
+
+    # Verification + KYC fields
+    phone_verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    country_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    kyc_level: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    user: Mapped[User] = relationship("User", back_populates="profile")

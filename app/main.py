@@ -4,8 +4,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.routing import APIRoute
 
+from app.api.auth import router as auth_router
 from app.api.health import router as health_router
 from app.api.markets import router as markets_router
+from app.api.profile import router as profile_router
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -42,6 +44,8 @@ def root():
 # Routers
 app.include_router(health_router)
 app.include_router(markets_router, prefix="/markets", tags=["markets"])
+app.include_router(auth_router)
+app.include_router(profile_router)
 
 # ---- CLI: python app/main.py ----
 if __name__ == "__main__":
