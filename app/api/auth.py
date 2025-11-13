@@ -2,7 +2,7 @@
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel, EmailStr, constr
+from pydantic import BaseModel, ConfigDict, EmailStr, constr
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
@@ -21,6 +21,9 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 # ---- Schemas
 class SignupIn(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid"
+    )  # Prevent extra fields in input during signup
     email: EmailStr
     password: constr(min_length=8)
     name: str | None = None
@@ -65,6 +68,13 @@ def signup(payload: SignupIn, db: Session = Depends(get_db)):
         }
     )
     db.add(user)
+    db.flush()  # get user.id without finishing the txn
+    models.log_auth_event(db, user.id, "signup", "password")
+
+    # ensure a profile exists and mark provider
+    if not db.query(models.UserProfile).filter_by(user_id=user.id).first():
+        db.add(models.UserProfile(user_id=user.id, auth_provider="password"))
+
     db.commit()
     db.refresh(user)
     return UserOut(
@@ -81,6 +91,9 @@ def login(payload: LoginIn, db: Session = Depends(get_db)):
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         )
     # `user.id` is str (not Optional), so no type error now
+    models.log_auth_event(db, user.id, "login", "password")
+    db.commit()
+
     return TokenOut(
         access_token=create_access_token(user.id),
         refresh_token=create_refresh_token(user.id),

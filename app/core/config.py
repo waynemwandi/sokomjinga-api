@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     ACCESS_EXPIRE_MIN: int = 60
     REFRESH_EXPIRE_DAYS: int = 30
 
+    # Google OAuth
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_REDIRECT_URI: str = ""  # e.g. http://127.0.0.1:8000/auth/google/callback
+    BASE_FRONTEND_URL: str = ""  # e.g. http://127.0.0.1:5173
+
     @computed_field(return_type=str)
     @property
     def database_url(self) -> str:
