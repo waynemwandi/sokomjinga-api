@@ -8,15 +8,20 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
     func,
     text,
 )
+from sqlalchemy.dialects.mysql import INTEGER as MySQLInteger
 from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
 
 Base = declarative_base()
+
+# Wallet currency constants
+CENT_SCALE = 100  # 1 KES = 100 cents
 
 
 def _id() -> str:
@@ -153,3 +158,165 @@ class AuthEvent(Base):
     )
 
     user: Mapped["User"] = relationship("User")
+
+
+class WalletAccount(TimestampMixin, Base):
+    __tablename__ = "wallet_accounts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_id)
+
+    # Link to user for normal wallets; NULL for system accounts
+    user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # "user_wallet", "mpesa_clearing", "platform_fee", "market_escrow", etc
+    type: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    # "KES" for now
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="KES")
+
+    # "active", "frozen", "closed"
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="active", server_default=text("'active'")
+    )
+
+    # Optional extra info, e.g. which market an escrow account belongs to
+    meta_data: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    user: Mapped["User"] = relationship("User", backref="wallet_accounts")
+
+
+class WalletBalance(TimestampMixin, Base):
+    __tablename__ = "wallet_balances"
+
+    account_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("wallet_accounts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+
+    # store in "cents"
+    available_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pending_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="KES")
+
+    account: Mapped["WalletAccount"] = relationship("WalletAccount", backref="balance")
+
+
+class WalletLedgerEntry(Base):
+    __tablename__ = "wallet_ledger_entries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_id)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    debit_account_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("wallet_accounts.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    credit_account_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("wallet_accounts.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="KES")
+
+    # High-level business meaning
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    # Link back to business objects
+    reference_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reference_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    description: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    debit_account: Mapped["WalletAccount"] = relationship(
+        "WalletAccount", foreign_keys=[debit_account_id]
+    )
+    credit_account: Mapped["WalletAccount"] = relationship(
+        "WalletAccount", foreign_keys=[credit_account_id]
+    )
+
+
+class WalletDeposit(TimestampMixin, Base):
+    __tablename__ = "wallet_deposits"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_id)
+
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    account_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("wallet_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="KES")
+
+    # "pending", "confirmed", "failed"
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default=text("'pending'")
+    )
+
+    mpesa_reference: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    mpesa_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    user: Mapped["User"] = relationship("User", backref="wallet_deposits")
+    account: Mapped["WalletAccount"] = relationship("WalletAccount", backref="deposits")
+
+
+class WalletWithdrawal(TimestampMixin, Base):
+    __tablename__ = "wallet_withdrawals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_id)
+
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    account_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("wallet_accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="KES")
+
+    # "pending", "approved", "processing", "completed", "failed"
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default=text("'pending'")
+    )
+
+    mpesa_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    mpesa_reference: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    user: Mapped["User"] = relationship("User", backref="wallet_withdrawals")
+    account: Mapped["WalletAccount"] = relationship(
+        "WalletAccount", backref="withdrawals"
+    )

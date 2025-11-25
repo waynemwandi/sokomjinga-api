@@ -37,6 +37,9 @@ DATABASE_URL=mysql+pymysql://app:apppass@localhost:3306/sokomjinga
 #### Run migrations
 
 ```sh
+
+alembic revision --autogenerate -m "your-message-here"
+
 alembic upgrade head
 ```
 
