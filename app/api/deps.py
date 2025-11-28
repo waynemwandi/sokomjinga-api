@@ -1,37 +1,72 @@
 # app/api/deps.py
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
-from app.core.security import decode_token
+from app.core import security
 from app.db import models
 from app.db.session import get_db
 
 
-def get_current_user(
-    db: Session = Depends(get_db),
-    authorization: str | None = Header(None),
-) -> models.User:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token"
-        )
-    token = authorization.split(" ", 1)[1].strip()
-    data = decode_token(token)
-    if not data or data.get("type") != "access":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
-        )
+def get_token_from_request(request: Request) -> str:
+    """
+    Extract JWT from either:
+      - Authorization: Bearer <token>
+      - access_token cookie (HttpOnly, set by SvelteKit)
+    """
+    auth = request.headers.get("Authorization")
+    if auth and auth.lower().startswith("bearer "):
+        return auth.split(" ", 1)[1].strip()
 
-    user_id = data.get("sub")
-    user = db.get(models.User, user_id)
-    if not user or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive or missing user"
-        )
+    cookie_token = request.cookies.get("access_token")
+    if cookie_token:
+        return cookie_token
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Missing bearer token",
+    )
+
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+
+
+def get_current_user(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> models.User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    # will read from Authorization header OR access_token cookie
+    try:
+        token = get_token_from_request(request)
+    except HTTPException:
+        raise credentials_exception
+
+    payload = security.decode_token(token)
+    if payload is None:
+        raise credentials_exception
+
+    user_id = payload.get("sub")
+    if user_id is None:
+        raise credentials_exception
+
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise credentials_exception
+
     return user
 
 
-def require_admin(user: models.User = Depends(get_current_user)):
-    if not user.is_admin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admins only")
+def require_admin(user: models.User = Depends(get_current_user)) -> models.User:
+    if not getattr(user, "is_admin", False):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
     return user

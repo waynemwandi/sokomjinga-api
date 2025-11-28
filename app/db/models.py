@@ -320,3 +320,58 @@ class WalletWithdrawal(TimestampMixin, Base):
     account: Mapped["WalletAccount"] = relationship(
         "WalletAccount", backref="withdrawals"
     )
+
+
+class WalletBet(TimestampMixin, Base):
+    __tablename__ = "wallet_bets"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_id)
+
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    market_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("markets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    outcome_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("outcomes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # How much money we locked from the user's wallet for this bet (in wallet "cents")
+    amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # optional: how many "shares" the user bought
+    shares: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    # optional: price per share (1–100) at the moment of the bet (for now we can
+    # just set something simple and improve later)
+    price_cents_at_bet: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # "open" (market not resolved), "settled_won", "settled_lost", "cancelled"
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+
+    # link back to the ledger entry that locked the funds
+    ledger_entry_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("wallet_ledger_entries.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    user: Mapped["User"] = relationship("User", backref="wallet_bets")
+    market: Mapped["Market"] = relationship("Market", backref="wallet_bets")
+    outcome: Mapped["Outcome"] = relationship("Outcome", backref="wallet_bets")
+    ledger_entry: Mapped["WalletLedgerEntry"] = relationship(
+        "WalletLedgerEntry", backref="wallet_bets"
+    )

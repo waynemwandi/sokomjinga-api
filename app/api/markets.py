@@ -4,6 +4,12 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.api import deps
+from app.api.wallet import (
+    get_or_create_market_escrow_account,
+    get_or_create_user_wallet,
+)
+from app.db import models
 from app.db.models import Market, Outcome
 from app.db.session import get_db
 
@@ -47,13 +53,13 @@ def outcome_to_dict(o: Outcome) -> dict:
     }
 
 
-@router.get("")
+@router.get("")  # List markets - PUBLIC
 def list_markets(db: Session = Depends(get_db)):
     rows = db.query(Market).order_by(Market.created_at.desc()).all()
     return [market_to_dict(m) for m in rows]
 
 
-@router.get("/{market_id}")
+@router.get("/{market_id}")  # Get market by ID - PUBLIC
 def get_market(market_id: str, db: Session = Depends(get_db)):
     m = db.query(Market).filter(Market.id == market_id).first()
     if not m:
@@ -61,7 +67,11 @@ def get_market(market_id: str, db: Session = Depends(get_db)):
     return market_to_dict(m)
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(deps.require_admin)],
+)  # Create market - ADMIN ONLY
 def create_market(payload: dict, db: Session = Depends(get_db)):
     """
     payload keys accepted:
@@ -90,10 +100,29 @@ def create_market(payload: dict, db: Session = Depends(get_db)):
     db.add(m)
     db.commit()
     db.refresh(m)
+    # Auto-create YES/NO outcomes at 50/50
+    yes = Outcome(
+        market_id=m.id,
+        label="Yes",
+        price_cents=50,
+        status="open",
+    )
+    no = Outcome(
+        market_id=m.id,
+        label="No",
+        price_cents=50,
+        status="open",
+    )
+
+    db.add_all([yes, no])
+    db.commit()
     return market_to_dict(m)
 
 
-@router.put("/{market_id}")
+@router.put(
+    "/{market_id}",
+    dependencies=[Depends(deps.require_admin)],
+)  # Update market - ADMIN ONLY
 def update_market(market_id: str, payload: dict, db: Session = Depends(get_db)):
     m = db.query(Market).filter(Market.id == market_id).first()
     if not m:
@@ -133,7 +162,11 @@ def update_market(market_id: str, payload: dict, db: Session = Depends(get_db)):
     return market_to_dict(m)
 
 
-@router.delete("/{market_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{market_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(deps.require_admin)],
+)  # Delete market - ADMIN ONLY
 def delete_market(market_id: str, db: Session = Depends(get_db)):
     m = db.query(Market).filter(Market.id == market_id).first()
     if not m:
@@ -146,7 +179,11 @@ def delete_market(market_id: str, db: Session = Depends(get_db)):
 # ---------- Outcomes (under a market) ----------
 
 
-@router.post("/{market_id}/outcomes", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{market_id}/outcomes",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(deps.require_admin)],
+)  # Add outcome to market - ADMIN ONLY
 def add_outcome(market_id: str, payload: dict, db: Session = Depends(get_db)):
     m = db.query(Market).filter(Market.id == market_id).first()
     if not m:
@@ -168,7 +205,12 @@ def add_outcome(market_id: str, payload: dict, db: Session = Depends(get_db)):
     return outcome_to_dict(o)
 
 
-@router.put("/{market_id}/outcomes/{outcome_id}")
+@router.put(
+    "/{market_id}/outcomes/{outcome_id}",
+    dependencies=[
+        Depends(deps.require_admin),
+    ],
+)  # Update outcome - ADMIN ONLY
 def update_outcome(
     market_id: str, outcome_id: str, payload: dict, db: Session = Depends(get_db)
 ):
@@ -199,8 +241,10 @@ def update_outcome(
 
 
 @router.delete(
-    "/{market_id}/outcomes/{outcome_id}", status_code=status.HTTP_204_NO_CONTENT
-)
+    "/{market_id}/outcomes/{outcome_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(deps.require_admin)],
+)  # Delete outcome - ADMIN ONLY
 def delete_outcome(market_id: str, outcome_id: str, db: Session = Depends(get_db)):
     o = (
         db.query(Outcome)
@@ -212,4 +256,149 @@ def delete_outcome(market_id: str, outcome_id: str, db: Session = Depends(get_db
     db.delete(o)
     db.commit()
     return None
-    return None
+
+
+# ---------- Bets (user positions on outcomes) ----------
+
+
+@router.post("/{market_id}/bets", status_code=status.HTTP_201_CREATED)
+def place_bet(
+    market_id: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(deps.get_current_user),
+):
+    """
+    Place a bet on a given outcome in this market.
+
+    Body:
+      {
+        "outcome_id": "<uuid>",
+        "amount_cents": 5000   # e.g. 50 KES if your wallet uses "cents" = 1/100 KES
+      }
+    """
+    outcome_id = (payload.get("outcome_id") or "").strip()
+    amount_cents = payload.get("amount_cents")
+
+    # Basic validation
+    if not outcome_id:
+        raise HTTPException(status_code=400, detail="outcome_id is required")
+
+    try:
+        amount_cents = int(amount_cents)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="amount_cents must be an integer")
+
+    if amount_cents <= 0:
+        raise HTTPException(
+            status_code=400, detail="amount_cents must be greater than zero"
+        )
+
+    # Load market and outcome
+    market = db.query(Market).filter(Market.id == market_id).first()
+    if not market:
+        raise HTTPException(status_code=404, detail="Market not found")
+
+    if market.status != "open":
+        raise HTTPException(status_code=400, detail="Market is not open")
+
+    # Optional: check close_at
+    if market.close_at and market.close_at <= datetime.utcnow():
+        raise HTTPException(status_code=400, detail="Market is closed")
+
+    outcome = (
+        db.query(Outcome)
+        .filter(Outcome.id == outcome_id, Outcome.market_id == market_id)
+        .first()
+    )
+    if not outcome:
+        raise HTTPException(status_code=404, detail="Outcome not found")
+
+    if outcome.status != "open":
+        raise HTTPException(status_code=400, detail="Outcome is not open")
+
+    # Fetch user wallet + market escrow system account
+    user_wallet = get_or_create_user_wallet(db, user.id)
+    escrow_account = get_or_create_market_escrow_account(db)
+
+    # Fetch balances (assumes a WalletBalance row exists for each)
+    user_balance = (
+        db.query(models.WalletBalance)
+        .filter(models.WalletBalance.account_id == user_wallet.id)
+        .with_for_update()
+        .first()
+    )
+    escrow_balance = (
+        db.query(models.WalletBalance)
+        .filter(models.WalletBalance.account_id == escrow_account.id)
+        .with_for_update()
+        .first()
+    )
+
+    if not user_balance:
+        raise HTTPException(status_code=500, detail="User wallet balance not found")
+
+    if user_balance.available_cents < amount_cents:
+        raise HTTPException(status_code=400, detail="Insufficient wallet balance")
+
+    # For now: 1 share, price = amount_cents / 100 (approx KES value)
+    # You can refine this later with your pricing curve.
+    shares = 1
+    price_cents_at_bet = amount_cents  # simple placeholder
+
+    # We'll create bet -> ledger entry -> link them in one transaction
+    try:
+        # 1) Create bet (ledger_entry_id will be filled after creating ledger row)
+        bet = models.WalletBet(
+            user_id=user.id,
+            market_id=market.id,
+            outcome_id=outcome.id,
+            amount_cents=amount_cents,
+            shares=shares,
+            price_cents_at_bet=price_cents_at_bet,
+            status="open",
+        )
+        db.add(bet)
+        db.flush()  # bet.id available
+
+        # 2) Create ledger entry: user_wallet -> market_escrow
+        ledger = models.WalletLedgerEntry(
+            debit_account_id=user_wallet.id,
+            credit_account_id=escrow_account.id,
+            amount_cents=amount_cents,
+            currency=user_wallet.currency,
+            kind="bet_lock",
+            reference_type="wallet_bet",
+            reference_id=bet.id,
+            description=f"Bet on outcome {outcome.label} in market {market.title}",
+        )
+        db.add(ledger)
+        db.flush()  # ledger.id available
+
+        # 3) Update bet with ledger_entry_id
+        bet.ledger_entry_id = ledger.id
+
+        # 4) Update balances
+        user_balance.available_cents -= amount_cents
+        escrow_balance.available_cents += amount_cents
+
+        db.commit()
+        db.refresh(bet)
+
+    except Exception:
+        db.rollback()
+        raise
+
+    return {
+        "id": bet.id,
+        "user_id": bet.user_id,
+        "market_id": bet.market_id,
+        "outcome_id": bet.outcome_id,
+        "amount_cents": bet.amount_cents,
+        "shares": bet.shares,
+        "price_cents_at_bet": bet.price_cents_at_bet,
+        "status": bet.status,
+        "ledger_entry_id": bet.ledger_entry_id,
+        "created_at": bet.created_at,
+        "updated_at": bet.updated_at,
+    }

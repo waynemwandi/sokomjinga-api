@@ -101,6 +101,88 @@ def get_or_create_mpesa_clearing_account(db: Session) -> models.WalletAccount:
     return acct
 
 
+def get_or_create_market_escrow_account(db: Session) -> models.WalletAccount:
+    """
+    System account that holds all locked stakes for open markets.
+
+    - user_id is NULL (it's not tied to a user)
+    - type = 'market_escrow'
+    """
+    acct = (
+        db.query(models.WalletAccount)
+        .filter(
+            models.WalletAccount.user_id.is_(None),
+            models.WalletAccount.type == "market_escrow",
+        )
+        .first()
+    )
+    if acct:
+        return acct
+
+    # Create account row
+    acct = models.WalletAccount(
+        user_id=None,
+        type="market_escrow",
+        currency="KES",
+        status="active",
+    )
+    db.add(acct)
+    db.flush()  # ensure acct.id is available
+
+    # Create matching balance row
+    bal = models.WalletBalance(
+        account_id=acct.id,
+        available_cents=0,
+        pending_cents=0,
+        currency="KES",
+    )
+    db.add(bal)
+    db.flush()
+
+    return acct
+
+
+def get_or_create_platform_fee_account(db: Session) -> models.WalletAccount:
+    """
+    System account where your platform fees accumulate.
+
+    - user_id is NULL
+    - type = 'platform_fee'
+    """
+    acct = (
+        db.query(models.WalletAccount)
+        .filter(
+            models.WalletAccount.user_id.is_(None),
+            models.WalletAccount.type == "platform_fee",
+        )
+        .first()
+    )
+    if acct:
+        return acct
+
+    # Create account row
+    acct = models.WalletAccount(
+        user_id=None,
+        type="platform_fee",
+        currency="KES",
+        status="active",
+    )
+    db.add(acct)
+    db.flush()
+
+    # Create matching balance row
+    bal = models.WalletBalance(
+        account_id=acct.id,
+        available_cents=0,
+        pending_cents=0,
+        currency="KES",
+    )
+    db.add(bal)
+    db.flush()
+
+    return acct
+
+
 @router.get("/me", response_model=WalletSummary)
 def get_my_wallet(
     db: Session = Depends(get_db),
