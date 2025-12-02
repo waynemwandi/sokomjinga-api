@@ -9,6 +9,7 @@ from app.api.auth import router as auth_router
 from app.api.google_auth import router as google_router
 from app.api.health import router as health_router
 from app.api.markets import router as markets_router
+from app.api.me import router as me_router
 from app.api.profile import router as profile_router
 from app.api.wallet import router as wallet_router
 from app.core.config import get_settings
@@ -52,6 +53,7 @@ app.include_router(profile_router)
 app.include_router(google_router)
 app.include_router(admin_router)
 app.include_router(wallet_router)
+app.include_router(me_router)
 
 
 # ---- CLI: python app/main.py ----

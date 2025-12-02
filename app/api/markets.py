@@ -272,10 +272,10 @@ def place_bet(
     Place a bet on a given outcome in this market.
 
     Body:
-      {
+    {
         "outcome_id": "<uuid>",
         "amount_cents": 5000   # e.g. 50 KES if your wallet uses "cents" = 1/100 KES
-      }
+    }
     """
     outcome_id = (payload.get("outcome_id") or "").strip()
     amount_cents = payload.get("amount_cents")
@@ -318,7 +318,7 @@ def place_bet(
         raise HTTPException(status_code=400, detail="Outcome is not open")
 
     # Fetch user wallet + market escrow system account
-    user_wallet = get_or_create_user_wallet(db, user.id)
+    user_wallet = get_or_create_user_wallet(db, user)
     escrow_account = get_or_create_market_escrow_account(db)
 
     # Fetch balances (assumes a WalletBalance row exists for each)
