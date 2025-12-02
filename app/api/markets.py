@@ -1,7 +1,9 @@
 # app/api/markets.py
+from collections import defaultdict
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api import deps
@@ -16,6 +18,7 @@ from app.db.session import get_db
 router = APIRouter()
 
 
+# ----------- Helpers -----------
 def market_to_dict(m: Market) -> dict:
     return {
         "id": m.id,
@@ -53,6 +56,91 @@ def outcome_to_dict(o: Outcome) -> dict:
     }
 
 
+BASE_LIQUIDITY_CENTS = 100_00  # KES 100.00 as a simple buffer; tweak later if needed
+
+
+def recompute_market_prices(db: Session, market: Market) -> None:
+    """
+    Recompute YES/NO prices for a market based on total open stake, with a liquidity buffer.
+
+    price_cents ~ probability * 100, where:
+      prob_yes = (stake_yes + K) / (stake_yes + stake_no + 2K)
+    """
+    outcomes = list(market.outcomes or [])
+
+    # We assume binary YES/NO for now
+    yes = next((o for o in outcomes if (o.label or "").lower() == "yes"), None)
+    no = next((o for o in outcomes if (o.label or "").lower() == "no"), None)
+
+    if not yes or not no:
+        # For now, only handle the standard YES/NO markets
+        return
+
+    # Sum all *open* bets per outcome
+    stake_yes = (
+        db.query(func.coalesce(func.sum(models.WalletBet.amount_cents), 0))
+        .filter(
+            models.WalletBet.market_id == market.id,
+            models.WalletBet.outcome_id == yes.id,
+            models.WalletBet.status == "open",
+        )
+        .scalar()
+        or 0
+    )
+
+    stake_no = (
+        db.query(func.coalesce(func.sum(models.WalletBet.amount_cents), 0))
+        .filter(
+            models.WalletBet.market_id == market.id,
+            models.WalletBet.outcome_id == no.id,
+            models.WalletBet.status == "open",
+        )
+        .scalar()
+        or 0
+    )
+
+    K = BASE_LIQUIDITY_CENTS
+
+    denom = stake_yes + stake_no + 2 * K
+    if denom <= 0:
+        # No meaningful volume yet: keep it at 50/50
+        yes.price_cents = 50
+        no.price_cents = 50
+    else:
+        prob_yes = (stake_yes + K) / denom
+        price_yes = max(1, min(99, int(round(prob_yes * 100))))
+        price_no = 100 - price_yes
+
+        yes.price_cents = price_yes
+        no.price_cents = price_no
+
+    # Record a history snapshot for both outcomes
+    # (only if we have at least some liquidity or stake)
+    from app.db.models import MarketPriceHistory  # local import to avoid cycles
+
+    snapshots: list[MarketPriceHistory] = []
+
+    snapshots.append(
+        MarketPriceHistory(
+            market_id=market.id,
+            outcome_id=yes.id,
+            price_cents=yes.price_cents or 0,
+            total_stake_cents=stake_yes,
+        )
+    )
+    snapshots.append(
+        MarketPriceHistory(
+            market_id=market.id,
+            outcome_id=no.id,
+            price_cents=no.price_cents or 0,
+            total_stake_cents=stake_no,
+        )
+    )
+
+    db.add_all(snapshots)
+
+
+# ---------- Markets ----------
 @router.get("")  # List markets - PUBLIC
 def list_markets(db: Session = Depends(get_db)):
     rows = db.query(Market).order_by(Market.created_at.desc()).all()
@@ -177,8 +265,6 @@ def delete_market(market_id: str, db: Session = Depends(get_db)):
 
 
 # ---------- Outcomes (under a market) ----------
-
-
 @router.post(
     "/{market_id}/outcomes",
     status_code=status.HTTP_201_CREATED,
@@ -259,8 +345,6 @@ def delete_outcome(market_id: str, outcome_id: str, db: Session = Depends(get_db
 
 
 # ---------- Bets (user positions on outcomes) ----------
-
-
 @router.post("/{market_id}/bets", status_code=status.HTTP_201_CREATED)
 def place_bet(
     market_id: str,
@@ -342,11 +426,10 @@ def place_bet(
         raise HTTPException(status_code=400, detail="Insufficient wallet balance")
 
     # For now: 1 share, price = amount_cents / 100 (approx KES value)
-    # You can refine this later with your pricing curve.
     shares = 1
     price_cents_at_bet = amount_cents  # simple placeholder
 
-    # We'll create bet -> ledger entry -> link them in one transaction
+    # Create a bet -> ledger entry -> link them in one transaction
     try:
         # 1) Create bet (ledger_entry_id will be filled after creating ledger row)
         bet = models.WalletBet(
@@ -382,6 +465,9 @@ def place_bet(
         user_balance.available_cents -= amount_cents
         escrow_balance.available_cents += amount_cents
 
+        # 5) Recompute market prices and record history
+        recompute_market_prices(db, market)
+
         db.commit()
         db.refresh(bet)
 
@@ -401,4 +487,67 @@ def place_bet(
         "ledger_entry_id": bet.ledger_entry_id,
         "created_at": bet.created_at,
         "updated_at": bet.updated_at,
+    }
+
+
+# ---------- Public price history ----------
+
+
+@router.get("/{market_id}/price-history")
+def get_market_price_history(
+    market_id: str,
+    limit: int = 200,  # max points per outcome
+    db: Session = Depends(get_db),
+):
+    """
+    Public timeseries of price snapshots for this market.
+
+    Returns the last `limit` points per outcome, ordered by time ascending.
+    """
+    # 1) Ensure market exists and load outcomes for labels
+    market = db.query(Market).filter(Market.id == market_id).first()
+    if not market:
+        raise HTTPException(status_code=404, detail="Market not found")
+
+    outcomes_by_id = {o.id: o for o in (market.outcomes or [])}
+
+    # 2) Fetch all history rows for this market (oldest first)
+    rows = (
+        db.query(models.MarketPriceHistory)
+        .filter(models.MarketPriceHistory.market_id == market_id)
+        .order_by(models.MarketPriceHistory.created_at.asc())
+        .all()
+    )
+
+    # 3) Group by outcome_id in Python
+    grouped: dict[str, list[models.MarketPriceHistory]] = defaultdict(list)
+    for r in rows:
+        grouped[r.outcome_id].append(r)
+
+    # 4) Build response: apply `limit` per outcome and serialize
+    resp_outcomes: list[dict] = []
+    for outcome_id, history_rows in grouped.items():
+        # take last `limit` points, but keep time ascending
+        sliced = history_rows[-limit:]
+        points = [
+            {
+                "t": h.created_at,
+                "price_cents": h.price_cents,
+                "total_stake_cents": int(h.total_stake_cents or 0),
+            }
+            for h in sliced
+        ]
+
+        outcome_obj = outcomes_by_id.get(outcome_id)
+        resp_outcomes.append(
+            {
+                "outcome_id": outcome_id,
+                "label": outcome_obj.label if outcome_obj else None,
+                "points": points,
+            }
+        )
+
+    return {
+        "market_id": market.id,
+        "outcomes": resp_outcomes,
     }

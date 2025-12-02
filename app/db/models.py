@@ -375,3 +375,36 @@ class WalletBet(TimestampMixin, Base):
     ledger_entry: Mapped["WalletLedgerEntry"] = relationship(
         "WalletLedgerEntry", backref="wallet_bets"
     )
+
+
+class MarketPriceHistory(Base):
+    __tablename__ = "market_price_history"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_id)
+
+    market_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("markets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    outcome_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("outcomes.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # snapshot of the outcome price at this time (0–100)
+    price_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # total stake on this outcome in cents at this time
+    total_stake_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    market: Mapped["Market"] = relationship("Market", backref="price_history")
+    outcome: Mapped["Outcome"] = relationship("Outcome", backref="price_history")
