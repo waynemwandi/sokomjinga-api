@@ -29,9 +29,6 @@ def get_token_from_request(request: Request) -> str:
     )
 
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
-
-
 def get_current_user(
     request: Request,
     db: Session = Depends(get_db),
