@@ -72,12 +72,6 @@ class Outcome(TimestampMixin, Base):
     market: Mapped["Market"] = relationship(back_populates="outcomes")
 
 
-# add to Market (inside class Market):
-outcomes: Mapped[list["Outcome"]] = relationship(
-    back_populates="market", cascade="all, delete-orphan"
-)
-
-
 class User(TimestampMixin, Base):
     __tablename__ = "users"
 
