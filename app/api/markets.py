@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app import db
 from app.api import deps
 from app.api.wallet import (
     get_or_create_market_escrow_account,
@@ -19,7 +20,9 @@ router = APIRouter()
 
 
 # ----------- Helpers -----------
-def market_to_dict(m: Market) -> dict:
+def market_to_dict(m: Market, db: Session) -> dict:
+    volume_cents = compute_market_volume_cents(db, m.id)
+
     return {
         "id": m.id,
         "title": m.title,
@@ -30,6 +33,7 @@ def market_to_dict(m: Market) -> dict:
         "close_at": m.close_at,
         "created_at": m.created_at,
         "updated_at": m.updated_at,
+        "volume_cents": volume_cents,
         "outcomes": [
             {
                 "id": o.id,
@@ -140,11 +144,23 @@ def recompute_market_prices(db: Session, market: Market) -> None:
     db.add_all(snapshots)
 
 
+def compute_market_volume_cents(db: Session, market_id: str) -> int:
+    return (
+        db.query(func.coalesce(func.sum(models.WalletBet.amount_cents), 0))
+        .filter(
+            models.WalletBet.market_id == market_id,
+            models.WalletBet.status == "open",
+        )
+        .scalar()
+        or 0
+    )
+
+
 # ---------- Markets ----------
 @router.get("")  # List markets - PUBLIC
 def list_markets(db: Session = Depends(get_db)):
     rows = db.query(Market).order_by(Market.created_at.desc()).all()
-    return [market_to_dict(m) for m in rows]
+    return [market_to_dict(m, db) for m in rows]
 
 
 @router.get("/{market_id}")  # Get market by ID - PUBLIC
@@ -152,7 +168,7 @@ def get_market(market_id: str, db: Session = Depends(get_db)):
     m = db.query(Market).filter(Market.id == market_id).first()
     if not m:
         raise HTTPException(status_code=404, detail="Market not found")
-    return market_to_dict(m)
+    return market_to_dict(m, db)
 
 
 @router.post(
@@ -204,7 +220,7 @@ def create_market(payload: dict, db: Session = Depends(get_db)):
 
     db.add_all([yes, no])
     db.commit()
-    return market_to_dict(m)
+    return market_to_dict(m, db)
 
 
 @router.put(
@@ -247,7 +263,7 @@ def update_market(market_id: str, payload: dict, db: Session = Depends(get_db)):
     db.add(m)
     db.commit()
     db.refresh(m)
-    return market_to_dict(m)
+    return market_to_dict(m, db)
 
 
 @router.delete(
