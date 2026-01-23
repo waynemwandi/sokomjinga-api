@@ -31,6 +31,7 @@ def market_to_dict(m: Market, db: Session) -> dict:
         "image_url": m.image_url,
         "category": m.category,
         "close_at": m.close_at,
+        "projected_end_date": m.projected_end_date,
         "created_at": m.created_at,
         "updated_at": m.updated_at,
         "volume_cents": volume_cents,
@@ -192,6 +193,15 @@ def create_market(payload: dict, db: Session = Depends(get_db)):
     m.category = payload.get("category")
 
     close_at = payload.get("close_at")
+    projected_end_date = payload.get("projected_end_date")
+    if projected_end_date:
+        try:
+            m.projected_end_date = datetime.fromisoformat(projected_end_date)
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="projected_end_date must be ISO8601",
+            )
     if close_at:
         # accept "YYYY-MM-DDTHH:MM:SS" or "YYYY-MM-DD"
         try:
@@ -249,6 +259,7 @@ def update_market(market_id: str, payload: dict, db: Session = Depends(get_db)):
 
     if "close_at" in payload:
         close_at = payload.get("close_at")
+
         if close_at:
             try:
                 m.close_at = datetime.fromisoformat(close_at)
@@ -256,6 +267,18 @@ def update_market(market_id: str, payload: dict, db: Session = Depends(get_db)):
                 raise HTTPException(status_code=400, detail="close_at must be ISO8601")
         else:
             m.close_at = None
+    if "projected_end_date" in payload:
+        ped = payload.get("projected_end_date")
+        if ped:
+            try:
+                m.projected_end_date = datetime.fromisoformat(ped)
+            except Exception:
+                raise HTTPException(
+                    status_code=400,
+                    detail="projected_end_date must be ISO8601",
+                )
+        else:
+            m.projected_end_date = None
 
     if "status" in payload:
         m.status = (payload.get("status") or "").strip() or m.status

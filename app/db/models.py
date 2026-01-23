@@ -51,6 +51,7 @@ class Market(TimestampMixin, Base):
     image_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     close_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    projected_end_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
     outcomes: Mapped[list["Outcome"]] = relationship(
         "Outcome", back_populates="market", cascade="all, delete-orphan"

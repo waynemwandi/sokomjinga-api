@@ -15,7 +15,7 @@ engine = create_engine(
     pool_recycle=3600,  # avoid stale connections
 )
 
-# NOTE: this is a *factory*, not a Session instanceW
+# NOTE: this is a *factory*, not a Session instance
 SessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
