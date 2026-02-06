@@ -1,13 +1,15 @@
 # app/api/admin.py
 from datetime import date, datetime, timedelta
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db
+from app.api import deps
+from app.api.deps import get_db, require_admin
 from app.db import models
+from app.db.models import WalletAccount
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -118,3 +120,138 @@ def auth_timeseries(
         )
 
     return AuthTimeseriesOut(days=days, points=points)
+
+
+@router.get("/wallets/summary")
+def wallet_summary(db: Session = Depends(get_db)):
+    totals = (
+        db.query(
+            func.count(models.WalletAccount.id),
+            func.sum(models.WalletBalance.available_cents),
+            func.sum(models.WalletBalance.pending_cents),
+        )
+        .join(
+            models.WalletBalance,
+            models.WalletBalance.account_id == models.WalletAccount.id,
+        )
+        .one()
+    )
+
+    user_wallets = (
+        db.query(func.count(models.WalletAccount.id))
+        .filter(models.WalletAccount.user_id.isnot(None))
+        .scalar()
+    )
+
+    system_wallets = (
+        db.query(func.count(models.WalletAccount.id))
+        .filter(models.WalletAccount.user_id.is_(None))
+        .scalar()
+    )
+
+    return {
+        "total_wallets": totals[0] or 0,
+        "user_wallets": user_wallets or 0,
+        "system_wallets": system_wallets or 0,
+        "total_available_cents": totals[1] or 0,
+        "total_pending_cents": totals[2] or 0,
+        "currency": "KES",
+    }
+
+
+@router.get("/wallets/by-type")
+def wallets_by_type(db: Session = Depends(get_db)):
+    rows = (
+        db.query(
+            models.WalletAccount.type,
+            func.count(models.WalletAccount.id),
+            func.sum(models.WalletBalance.available_cents),
+            func.sum(models.WalletBalance.pending_cents),
+        )
+        .join(
+            models.WalletBalance,
+            models.WalletBalance.account_id == models.WalletAccount.id,
+        )
+        .group_by(models.WalletAccount.type)
+        .all()
+    )
+
+    return [
+        {
+            "type": r[0],
+            "count": r[1],
+            "available_cents": r[2] or 0,
+            "pending_cents": r[3] or 0,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/wallets/activity")
+def wallet_activity(limit: int = 50, db: Session = Depends(get_db)):
+    entries = (
+        db.query(models.WalletLedgerEntry)
+        .order_by(models.WalletLedgerEntry.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        {
+            "id": e.id,
+            "created_at": e.created_at,
+            "kind": e.kind,
+            "amount_cents": e.amount_cents,
+            "debit_account_type": e.debit_account.type,
+            "credit_account_type": e.credit_account.type,
+            "reference_type": e.reference_type,
+        }
+        for e in entries
+    ]
+
+
+@router.get("/wallets")
+def list_wallets(
+    db: Session = Depends(get_db),
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    rows = (
+        db.query(
+            models.WalletAccount.id,
+            models.WalletAccount.type,
+            models.WalletAccount.user_id,
+            models.WalletAccount.created_at,
+            models.WalletAccount.updated_at,
+            models.WalletBalance.available_cents,
+            models.WalletBalance.pending_cents,
+        )
+        .join(
+            models.WalletBalance,
+            models.WalletBalance.account_id == models.WalletAccount.id,
+        )
+        .order_by(models.WalletAccount.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+        .all()
+    )
+
+    total = db.query(func.count(models.WalletAccount.id)).scalar()
+
+    return {
+        "items": [
+            {
+                "id": r.id,
+                "type": r.type,
+                "user_id": r.user_id,
+                "available_cents": r.available_cents or 0,
+                "pending_cents": r.pending_cents or 0,
+                "created_at": r.created_at,
+                "updated_at": r.updated_at,
+            }
+            for r in rows
+        ],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
