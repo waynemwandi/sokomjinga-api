@@ -60,7 +60,7 @@ def stk_push(deposit_id: str, db: Session = Depends(get_db)):
         "PartyA": deposit.user.profile.phone_e164.replace("+", ""),
         "PartyB": settings.MPESA_SHORTCODE,
         "PhoneNumber": deposit.user.profile.phone_e164.replace("+", ""),
-        "CallBackURL": f"{settings.MPESA_CALLBACK_BASE}/daraja/stk-callback",
+        "CallBackURL": f"{settings.MPESA_CALLBACK_BASE}/api/daraja/stk-callback",
         "AccountReference": account_reference,
         "TransactionDesc": "MM Wallet Topup",
     }
