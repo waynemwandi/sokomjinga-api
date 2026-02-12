@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     GOOGLE_REDIRECT_URI: str = ""  # e.g. http://127.0.0.1:8000/auth/google/callback
     BASE_FRONTEND_URL: str = ""  # e.g. http://127.0.0.1:5173
 
+    # Safaricom
+    MPESA_CONSUMER_KEY: str = ""
+    MPESA_CONSUMER_SECRET: str = ""
+    MPESA_SHORTCODE: str = ""
+    MPESA_PASSKEY: str = ""
+    MPESA_BASE_URL: str = ""  # https://api.safaricom.co.ke
+    MPESA_CALLBACK_BASE: str = ""  # https://maonimarket.com
+
     @computed_field(return_type=str)
     @property
     def database_url(self) -> str:

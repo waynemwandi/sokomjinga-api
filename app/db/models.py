@@ -267,13 +267,28 @@ class WalletDeposit(TimestampMixin, Base):
     amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="KES")
 
-    # "pending", "confirmed", "failed"
+    # pending | stk_sent | stk_success | stk_failed | confirmed | failed
     status: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="pending", server_default=text("'pending'")
+        String(16),
+        nullable=False,
+        default="pending",
+        server_default=text("'pending'"),
+        index=True,
     )
 
-    mpesa_reference: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # C2B fields
+    mpesa_reference: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
     mpesa_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    # STK fields
+    checkout_request_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+    merchant_request_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
 
     user: Mapped["User"] = relationship("User", backref="wallet_deposits")
     account: Mapped["WalletAccount"] = relationship("WalletAccount", backref="deposits")
@@ -403,3 +418,29 @@ class MarketPriceHistory(Base):
 
     market: Mapped["Market"] = relationship("Market", backref="price_history")
     outcome: Mapped["Outcome"] = relationship("Outcome", backref="price_history")
+
+
+class MpesaEvent(Base):
+    __tablename__ = "mpesa_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_id)
+
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    # "stk_callback", "c2b_validation", "c2b_confirmation"
+
+    mpesa_trans_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+    processed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("0"),
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )

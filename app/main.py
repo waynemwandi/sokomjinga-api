@@ -6,6 +6,7 @@ from fastapi.routing import APIRoute
 
 from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
+from app.api.daraja import router as daraja_router
 from app.api.google_auth import router as google_router
 from app.api.health import router as health_router
 from app.api.markets import router as markets_router
@@ -54,6 +55,7 @@ app.include_router(google_router)
 app.include_router(admin_router)
 app.include_router(wallet_router)
 app.include_router(me_router)
+app.include_router(daraja_router)
 
 
 # ---- CLI: python app/main.py ----
