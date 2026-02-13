@@ -146,61 +146,85 @@ def c2b_validation(payload: dict, db: Session = Depends(get_db)):
 @router.post("/c2b/confirmation")
 def c2b_confirmation(payload: dict, db: Session = Depends(get_db)):
 
-    event = models.MpesaEvent(
-        event_type="c2b_confirmation",
-        payload_json=json.dumps(payload),
-        mpesa_trans_id=payload.get("TransID"),
-    )
-    db.add(event)
-    db.commit()
+    try:
+        event = models.MpesaEvent(
+            event_type="c2b_confirmation",
+            payload_json=json.dumps(payload),
+            mpesa_trans_id=payload.get("TransID"),
+        )
+        db.add(event)
 
-    bill_ref = payload.get("BillRefNumber")
+        bill_ref = payload.get("BillRefNumber")
+        print("CONFIRMATION received")
+        print("BillRefNumber raw:", repr(bill_ref))
 
-    if not bill_ref or not bill_ref.startswith("MM-"):
-        return {"ResultCode": 0, "ResultDesc": "Ignored"}
+        if not bill_ref or not bill_ref.startswith("MM-"):
+            db.commit()
+            return {"ResultCode": 0, "ResultDesc": "Ignored"}
 
-    deposit_id = bill_ref.replace("MM-", "")
+        deposit_id = bill_ref[3:]
 
-    deposit = db.query(models.WalletDeposit).filter_by(id=deposit_id).first()
-    if not deposit or deposit.status == "confirmed":
-        return {"ResultCode": 0, "ResultDesc": "Already processed"}
+        print("Extracted deposit_id:", repr(deposit_id), "length:", len(deposit_id))
 
-    user_wallet = deposit.account
-    mpesa_clearing = get_or_create_mpesa_clearing_account(db)
+        deposit = db.query(models.WalletDeposit).filter_by(id=deposit_id).first()
+        print("Deposit lookup result:", deposit)
+        if deposit:
+            print("Deposit status before confirmation:", deposit.status)
 
-    user_bal = (
-        db.query(models.WalletBalance)
-        .filter_by(account_id=user_wallet.id)
-        .with_for_update()
-        .one()
-    )
-    mpesa_bal = (
-        db.query(models.WalletBalance)
-        .filter_by(account_id=mpesa_clearing.id)
-        .with_for_update()
-        .one()
-    )
+        if not deposit:
+            print("Deposit NOT FOUND")
+            db.commit()
+            return {"ResultCode": 0, "ResultDesc": "Deposit not found"}
 
-    entry = models.WalletLedgerEntry(
-        debit_account_id=mpesa_clearing.id,
-        credit_account_id=user_wallet.id,
-        amount_cents=deposit.amount_cents,
-        currency=deposit.currency,
-        kind="deposit",
-        reference_type="wallet_deposit",
-        reference_id=deposit.id,
-        description="MPESA deposit",
-    )
+        if deposit.status == "confirmed":
+            print("Deposit already confirmed")
+            db.commit()
+            return {"ResultCode": 0, "ResultDesc": "Already processed"}
 
-    db.add(entry)
+        user_wallet = deposit.account
+        mpesa_clearing = get_or_create_mpesa_clearing_account(db)
 
-    mpesa_bal.available_cents -= deposit.amount_cents
-    user_bal.available_cents += deposit.amount_cents
+        user_bal = (
+            db.query(models.WalletBalance)
+            .filter_by(account_id=user_wallet.id)
+            .with_for_update()
+            .one()
+        )
+        mpesa_bal = (
+            db.query(models.WalletBalance)
+            .filter_by(account_id=mpesa_clearing.id)
+            .with_for_update()
+            .one()
+        )
 
-    deposit.status = "confirmed"
-    deposit.mpesa_reference = payload.get("TransID")
-    deposit.mpesa_phone = payload.get("MSISDN")
+        entry = models.WalletLedgerEntry(
+            debit_account_id=mpesa_clearing.id,
+            credit_account_id=user_wallet.id,
+            amount_cents=deposit.amount_cents,
+            currency=deposit.currency,
+            kind="deposit",
+            reference_type="wallet_deposit",
+            reference_id=deposit.id,
+            description="MPESA deposit",
+        )
 
-    db.commit()
+        db.add(entry)
 
-    return {"ResultCode": 0, "ResultDesc": "Accepted"}
+        mpesa_bal.available_cents -= deposit.amount_cents
+        user_bal.available_cents += deposit.amount_cents
+
+        deposit.status = "confirmed"
+        deposit.mpesa_reference = payload.get("TransID")
+        deposit.mpesa_phone = payload.get("MSISDN")
+
+        print("About to commit confirmation for deposit:", deposit.id)
+        print("Setting mpesa_reference:", payload.get("TransID"))
+        print("Setting mpesa_phone:", payload.get("MSISDN"))
+        db.commit()
+
+        return {"ResultCode": 0, "ResultDesc": "Accepted"}
+
+    except Exception as e:
+        db.rollback()
+        print("CONFIRMATION FAILED:", str(e))
+        raise
