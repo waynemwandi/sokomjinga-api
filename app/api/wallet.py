@@ -1,4 +1,7 @@
 # app/api/wallet.py
+from datetime import datetime
+from typing import List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -6,8 +9,32 @@ from sqlalchemy.orm import Session
 from app.api import deps
 from app.db import models
 from app.db.session import get_db
+from app.services.mpesa import trigger_stk_push
 
 router = APIRouter(prefix="/wallet", tags=["wallet"])
+
+
+class StatementItem(BaseModel):
+    id: str
+    created_at: datetime
+    kind: str
+
+    amount_cents: int
+    signed_amount_cents: int
+    currency: str
+    direction: str  # "in" | "out"
+
+    reference_type: Optional[str] = None
+    reference_id: Optional[str] = None
+    description: Optional[str] = None
+
+    mpesa_reference: Optional[str] = None
+    mpesa_phone: Optional[str] = None
+
+
+class StatementResponse(BaseModel):
+    items: List[StatementItem]
+    total: int
 
 
 class WalletSummary(BaseModel):
@@ -223,6 +250,12 @@ def create_deposit(
     db.commit()
     db.refresh(dep)
 
+    # Trigger STK push immediately after creating deposit
+
+    trigger_stk_push(dep, db)
+
+    db.refresh(dep)  # refresh to get updated status (stk_sent or stk_failed)
+
     return DepositResponse(
         id=dep.id,
         status=dep.status,
@@ -313,3 +346,77 @@ def confirm_deposit_dev_only(
         amount_cents=dep.amount_cents,
         currency=dep.currency,
     )
+
+
+@router.get("/statement", response_model=StatementResponse)
+def get_wallet_statement(
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(deps.get_current_user),
+):
+    # Find active user wallet
+    wallet = (
+        db.query(models.WalletAccount)
+        .filter(
+            models.WalletAccount.user_id == current_user.id,
+            models.WalletAccount.type == "user_wallet",
+            models.WalletAccount.status == "active",
+        )
+        .first()
+    )
+    if not wallet:
+        return StatementResponse(items=[], total=0)
+
+    q = db.query(models.WalletLedgerEntry).filter(
+        (models.WalletLedgerEntry.debit_account_id == wallet.id)
+        | (models.WalletLedgerEntry.credit_account_id == wallet.id)
+    )
+
+    total = q.count()
+
+    entries = (
+        q.order_by(models.WalletLedgerEntry.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+        .all()
+    )
+
+    items: list[StatementItem] = []
+
+    for entry in entries:
+        is_in = entry.credit_account_id == wallet.id
+        direction = "in" if is_in else "out"
+        signed_amount = entry.amount_cents if is_in else -entry.amount_cents
+
+        mpesa_reference = None
+        mpesa_phone = None
+
+        if entry.reference_type == "wallet_deposit" and entry.reference_id:
+            dep = (
+                db.query(models.WalletDeposit)
+                .filter(models.WalletDeposit.id == entry.reference_id)
+                .first()
+            )
+            if dep:
+                mpesa_reference = dep.mpesa_reference
+                mpesa_phone = dep.mpesa_phone
+
+        items.append(
+            StatementItem(
+                id=entry.id,
+                created_at=entry.created_at,
+                kind=entry.kind,
+                amount_cents=entry.amount_cents,
+                signed_amount_cents=signed_amount,
+                currency=entry.currency,
+                direction=direction,
+                reference_type=entry.reference_type,
+                reference_id=entry.reference_id,
+                description=entry.description,
+                mpesa_reference=mpesa_reference,
+                mpesa_phone=mpesa_phone,
+            )
+        )
+
+    return StatementResponse(items=items, total=total)
