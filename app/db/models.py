@@ -280,7 +280,7 @@ class WalletDeposit(TimestampMixin, Base):
     mpesa_reference: Mapped[str | None] = mapped_column(
         String(64), nullable=True, index=True
     )
-    mpesa_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    mpesa_phone: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # STK fields
     checkout_request_id: Mapped[str | None] = mapped_column(
@@ -321,7 +321,7 @@ class WalletWithdrawal(TimestampMixin, Base):
         String(16), nullable=False, default="pending", server_default=text("'pending'")
     )
 
-    mpesa_phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    mpesa_phone: Mapped[str | None] = mapped_column(String(100), nullable=True)
     mpesa_reference: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     reason: Mapped[str | None] = mapped_column(String(255), nullable=True)

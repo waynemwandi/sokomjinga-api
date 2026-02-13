@@ -87,3 +87,20 @@ alembic revision --autogenerate -m "create markets table"
 alembic upgrade head
 
 ```
+
+## MySQL Database Backup - Manual Command
+
+```sh
+scp -i /c/Users/Wayne/Desktop/Desktop/sslKeys/kejasmartPublic.pem \
+ubuntu@13.50.156.247:/home/ubuntu/apps/sokomjinga/backups/prod_backup_20260213_090631.sql \
+/c/Users/Wayne/Desktop/
+
+```
+
+## Restore Database Backup - Manual Command
+
+```sh
+docker exec -i sokomjinga-iac-db-1 \
+mysql -uroot -p<MYSQL_PASSWORD> sokomjinga \
+< /home/ubuntu/apps/sokomjinga/backups/prod_backup_20260213_090631.sql
+```
