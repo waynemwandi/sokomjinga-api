@@ -22,6 +22,15 @@ def get_access_token():
 
 
 def trigger_stk_push(deposit: models.WalletDeposit, db: Session):
+    # Guard against missing phone number
+    if (
+        not deposit.user
+        or not deposit.user.profile
+        or not deposit.user.profile.phone_e164
+    ):
+        deposit.status = "stk_failed"
+        db.commit()
+        return {"error": "Phone number missing"}
 
     access_token = get_access_token()
 

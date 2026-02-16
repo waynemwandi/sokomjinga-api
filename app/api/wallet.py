@@ -237,6 +237,15 @@ def create_deposit(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(deps.get_current_user),
 ):
+    # Confirm phone is configured for STK push
+    profile = db.get(models.UserProfile, current_user.id)
+
+    if not profile or not profile.phone_e164:
+        raise HTTPException(
+            status_code=400,
+            detail="Phone number not configured",
+        )
+
     user_wallet = get_or_create_user_wallet(db, current_user)
 
     dep = models.WalletDeposit(
@@ -339,6 +348,33 @@ def confirm_deposit_dev_only(
 
     db.commit()
     db.refresh(dep)
+
+    return DepositResponse(
+        id=dep.id,
+        status=dep.status,
+        amount_cents=dep.amount_cents,
+        currency=dep.currency,
+    )
+
+
+# Query/poll deposit status to inform frontend of stk status (pending, stk_sent, stk_failed, confirmed)
+@router.get("/deposits/{deposit_id}", response_model=DepositResponse)
+def get_deposit(
+    deposit_id: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(deps.get_current_user),
+):
+    dep = (
+        db.query(models.WalletDeposit)
+        .filter(
+            models.WalletDeposit.id == deposit_id,
+            models.WalletDeposit.user_id == current_user.id,
+        )
+        .first()
+    )
+
+    if not dep:
+        raise HTTPException(status_code=404, detail="Deposit not found")
 
     return DepositResponse(
         id=dep.id,
