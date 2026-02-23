@@ -1,4 +1,6 @@
 # app/main.py
+import logging
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +19,12 @@ from app.core.config import get_settings
 
 settings = get_settings()
 app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
+
+# Setup logging
+logging.basicConfig(
+    level=logging.DEBUG if settings.DEBUG else logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 # CORS
 origins = [o.strip() for o in (settings.CORS_ORIGINS or "").split(",") if o.strip()]

@@ -15,6 +15,7 @@ from app.api.wallet import (
 from app.db import models
 from app.db.models import Market, Outcome
 from app.db.session import get_db
+from app.services.settlement import settle_market
 
 router = APIRouter()
 
@@ -303,6 +304,27 @@ def delete_market(market_id: str, db: Session = Depends(get_db)):
     return None
 
 
+@router.post(
+    "/{market_id}/settle",
+    dependencies=[Depends(deps.require_admin)],
+)
+def settle_market_endpoint(
+    market_id: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+):
+    outcome_id = payload.get("outcome_id")
+    if not outcome_id:
+        raise HTTPException(status_code=400, detail="outcome_id is required")
+
+    try:
+        return settle_market(db, market_id, outcome_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
 # ---------- Outcomes (under a market) ----------
 @router.post(
     "/{market_id}/outcomes",
@@ -470,7 +492,7 @@ def place_bet(
 
     # Create a bet -> ledger entry -> link them in one transaction
     try:
-        # 1) Create bet (ledger_entry_id will be filled after creating ledger row)
+        # 1. Create bet (ledger_entry_id will be filled after creating ledger row)
         bet = models.WalletBet(
             user_id=user.id,
             market_id=market.id,
@@ -483,7 +505,7 @@ def place_bet(
         db.add(bet)
         db.flush()  # bet.id available
 
-        # 2) Create ledger entry: user_wallet -> market_escrow
+        # 2. Create ledger entry: user_wallet -> market_escrow
         ledger = models.WalletLedgerEntry(
             debit_account_id=user_wallet.id,
             credit_account_id=escrow_account.id,
@@ -497,14 +519,14 @@ def place_bet(
         db.add(ledger)
         db.flush()  # ledger.id available
 
-        # 3) Update bet with ledger_entry_id
+        # 3. Update bet with ledger_entry_id
         bet.ledger_entry_id = ledger.id
 
-        # 4) Update balances
+        # 4. Update balances
         user_balance.available_cents -= amount_cents
         escrow_balance.available_cents += amount_cents
 
-        # 5) Recompute market prices and record history
+        # 5. Recompute market prices and record history
         recompute_market_prices(db, market)
 
         db.commit()
@@ -543,14 +565,14 @@ def get_market_price_history(
 
     Returns the last `limit` points per outcome, ordered by time ascending.
     """
-    # 1) Ensure market exists and load outcomes for labels
+    # 1. Ensure market exists and load outcomes for labels
     market = db.query(Market).filter(Market.id == market_id).first()
     if not market:
         raise HTTPException(status_code=404, detail="Market not found")
 
     outcomes_by_id = {o.id: o for o in (market.outcomes or [])}
 
-    # 2) Fetch all history rows for this market (oldest first)
+    # 2. Fetch all history rows for this market (oldest first)
     rows = (
         db.query(models.MarketPriceHistory)
         .filter(models.MarketPriceHistory.market_id == market_id)
@@ -558,12 +580,12 @@ def get_market_price_history(
         .all()
     )
 
-    # 3) Group by outcome_id in Python
+    # 3. Group by outcome_id in Python
     grouped: dict[str, list[models.MarketPriceHistory]] = defaultdict(list)
     for r in rows:
         grouped[r.outcome_id].append(r)
 
-    # 4) Build response: apply `limit` per outcome and serialize
+    # 4. Build response: apply `limit` per outcome and serialize
     resp_outcomes: list[dict] = []
     for outcome_id, history_rows in grouped.items():
         # take last `limit` points, but keep time ascending

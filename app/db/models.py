@@ -56,6 +56,38 @@ class Market(TimestampMixin, Base):
     outcomes: Mapped[list["Outcome"]] = relationship(
         "Outcome", back_populates="market", cascade="all, delete-orphan"
     )
+    fee_rate_bps: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=500,  # 5% = 500 basis points
+    )
+
+
+class MarketSettlement(Base):
+    __tablename__ = "market_settlements"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_id)
+
+    market_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("markets.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,  # ensures no double settlement
+        index=True,
+    )
+
+    outcome_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("outcomes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    total_pool_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+    fee_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
 
 
 class Outcome(TimestampMixin, Base):
@@ -208,7 +240,10 @@ class WalletLedgerEntry(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_id)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+        index=True,
     )
 
     debit_account_id: Mapped[str] = mapped_column(
