@@ -296,7 +296,7 @@ def confirm_deposit_dev_only(
     if not dep:
         raise HTTPException(status_code=404, detail="Deposit not found")
 
-    if dep.status != "pending":
+    if dep.status not in ["pending", "stk_sent"]:
         raise HTTPException(
             status_code=400,
             detail=f"Deposit is already {dep.status}",

@@ -151,7 +151,6 @@ def compute_market_volume_cents(db: Session, market_id: str) -> int:
         db.query(func.coalesce(func.sum(models.WalletBet.amount_cents), 0))
         .filter(
             models.WalletBet.market_id == market_id,
-            models.WalletBet.status == "open",
         )
         .scalar()
         or 0

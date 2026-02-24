@@ -29,6 +29,8 @@ def settle_market(db: Session, market_id: str, outcome_id: str):
 
     if not market:
         raise Exception("Market not found")
+    if market.status == "settled":
+        raise Exception("Market already settled")
 
     if market.status != "closed":
         raise Exception("Market must be closed before settlement")
