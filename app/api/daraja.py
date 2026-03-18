@@ -2,6 +2,7 @@
 import base64
 import datetime
 import json
+import logging
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,6 +12,8 @@ from app.api.wallet import get_or_create_mpesa_clearing_account
 from app.core.config import get_settings
 from app.db import models
 from app.db.session import get_db
+
+logger = logging.getLogger("maoni.daraja")
 
 router = APIRouter(prefix="/daraja", tags=["daraja"])
 
@@ -120,7 +123,7 @@ def stk_callback(payload: dict, db: Session = Depends(get_db)):
         db.commit()
 
     except Exception:
-        pass
+        logger.exception("STK callback processing failed")
 
     return {"ResultCode": 0, "ResultDesc": "Accepted"}
 

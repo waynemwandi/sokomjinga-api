@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     MPESA_BASE_URL: str = ""  # https://api.safaricom.co.ke
     MPESA_CALLBACK_BASE: str = ""  # https://maonimarket.com
 
+    # Email Configuration
+    SES_SMTP_HOST: str = ""
+    SES_SMTP_PORT: int = 587
+    SES_SMTP_USER: str = ""
+    SES_SMTP_PASS: str = ""
+    EMAIL_FROM: str = ""
+
     @computed_field(return_type=str)
     @property
     def database_url(self) -> str:
