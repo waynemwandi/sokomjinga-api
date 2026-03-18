@@ -15,6 +15,7 @@ from app.api.wallet import (
 from app.db import models
 from app.db.models import Market, Outcome
 from app.db.session import get_db
+from app.services.notifications import send_bet_confirmation
 from app.services.settlement import settle_market
 
 router = APIRouter()
@@ -530,6 +531,18 @@ def place_bet(
 
         db.commit()
         db.refresh(bet)
+
+        # 6. Send email AFTER successful commit
+        try:
+            send_bet_confirmation(
+                user=user,
+                market=market,
+                outcome=outcome,
+                amount_cents=amount_cents,
+            )
+        except Exception:
+            # Never break core flow because of email
+            pass
 
     except Exception:
         db.rollback()
