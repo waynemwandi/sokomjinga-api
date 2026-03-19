@@ -25,6 +25,22 @@ router = APIRouter()
 def market_to_dict(m: Market, db: Session) -> dict:
     volume_cents = compute_market_volume_cents(db, m.id)
 
+    # compute stake per outcome
+    stakes = (
+        db.query(
+            models.WalletBet.outcome_id,
+            func.coalesce(func.sum(models.WalletBet.amount_cents), 0),
+        )
+        .filter(
+            models.WalletBet.market_id == m.id,
+            models.WalletBet.status == "open",
+        )
+        .group_by(models.WalletBet.outcome_id)
+        .all()
+    )
+
+    stake_map = {outcome_id: total for outcome_id, total in stakes}
+
     return {
         "id": m.id,
         "title": m.title,
@@ -42,6 +58,7 @@ def market_to_dict(m: Market, db: Session) -> dict:
                 "id": o.id,
                 "label": o.label,
                 "price_cents": o.price_cents,
+                "total_stake_cents": stake_map.get(o.id, 0),
                 "status": o.status,
                 "created_at": o.created_at,
                 "updated_at": o.updated_at,
