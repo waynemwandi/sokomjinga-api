@@ -1,3 +1,4 @@
+# app/services/email.py
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -56,7 +57,7 @@ def send_email(
                 msg.as_string(),
             )
 
-        # ✅ success
+        # Success
         log.status = "sent"
         db.commit()
 

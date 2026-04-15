@@ -1,4 +1,11 @@
+# app/services/notifications.py
+from app.db import models
 from app.services.email import send_email
+from app.services.email_templates.bet_confirmation import render_bet_confirmation_email
+from app.services.email_templates.deposit_success import render_deposit_success_email
+from app.services.email_templates.market_created import render_market_created_email
+from app.services.email_templates.settlement_loss import render_settlement_loss_email
+from app.services.email_templates.settlement_win import render_settlement_win_email
 
 
 def send_bet_confirmation(user, market, outcome, amount_cents: int):
@@ -8,36 +15,58 @@ def send_bet_confirmation(user, market, outcome, amount_cents: int):
 
     subject = f"Bet Confirmed — {market.title}"
 
-    amount_kes = amount_cents / 100
-
-    body = f"""
-    <html>
-        <body style="font-family: Arial, sans-serif; background-color: #0b0f19; color: #ffffff; padding: 20px;">
-            <div style="max-width: 600px; margin: auto; background-color: #121826; padding: 20px; border-radius: 10px;">
-                
-                <h2 style="color: #00d4ff;">MaoniMarket</h2>
-
-                <p>Your bet has been successfully placed.</p>
-
-                <hr style="border: 0; border-top: 1px solid #2a2f3a;" />
-
-                <p><strong>Market:</strong> {market.title}</p>
-                <p><strong>Position:</strong> {outcome.label.upper()}</p>
-                <p><strong>Amount:</strong> KES {amount_kes:.2f}</p>
-
-                <hr style="border: 0; border-top: 1px solid #2a2f3a;" />
-
-                <p style="font-size: 12px; color: #9ca3af;">
-                    You are receiving this email because you placed a bet on MaoniMarket.
-                </p>
-
-            </div>
-        </body>
-    </html>
-    """
+    body = render_bet_confirmation_email(
+        user=user,
+        market=market,
+        outcome=outcome,
+        amount_cents=amount_cents,
+    )
 
     send_email(
         to_email=user.email,
         subject=subject,
         body=body,
     )
+    
+def send_settlement_win(user, market, payout_cents: int):
+
+    subject = f"You Won — {market.title}"
+
+    body = render_settlement_win_email(
+        user=user,
+        market=market,
+        payout_cents=payout_cents,
+    )
+
+    send_email(to_email=user.email, subject=subject, body=body)
+
+
+def send_settlement_loss(user, market):
+    subject = f"Market Settled — {market.title}"
+
+    body = render_settlement_loss_email(
+        user=user,
+        market=market,
+    )
+
+    send_email(to_email=user.email, subject=subject, body=body)
+    
+def send_market_created(db, market):
+    subject = f"New Market — {market.title}"
+
+    body = render_market_created_email(market)
+
+    users = db.query(models.User).all()
+
+    for user in users:
+        if not user.email:
+            continue
+
+        try:
+            send_email(
+                to_email=user.email,
+                subject=subject,
+                body=body,
+            )
+        except Exception:
+            pass

@@ -15,7 +15,7 @@ from app.api.wallet import (
 from app.db import models
 from app.db.models import Market, Outcome
 from app.db.session import get_db
-from app.services.notifications import send_bet_confirmation
+from app.services.notifications import send_bet_confirmation, send_market_created
 from app.services.settlement import settle_market
 
 router = APIRouter()
@@ -248,6 +248,11 @@ def create_market(payload: dict, db: Session = Depends(get_db)):
 
     db.add_all([yes, no])
     db.commit()
+    try:
+        send_market_created(db, m)
+    except Exception:
+        pass
+
     return market_to_dict(m, db)
 
 

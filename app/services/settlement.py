@@ -17,6 +17,7 @@ from app.db.models import (
     WalletBet,
     WalletLedgerEntry,
 )
+from app.services.notifications import send_settlement_loss, send_settlement_win
 
 logger = logging.getLogger("maoni.settlement")
 
@@ -145,6 +146,8 @@ def settle_market(db: Session, market_id: str, outcome_id: str):
             winners[i]["payout"] += 1
 
     # 9. Apply ledger entries
+    notifications = []
+    
     for x in payouts:
         bet = x["bet"]
         payout = x["payout"]
@@ -174,8 +177,14 @@ def settle_market(db: Session, market_id: str, outcome_id: str):
             user_bal.available_cents += payout
 
             bet.status = "settled_won"
+            
+            # Collect notification            
+            notifications.append(("win", bet.user, payout))
         else:
             bet.status = "settled_lost"
+            
+            # Collect notification
+            notifications.append(("loss", bet.user, 0))
 
     # Fee transfer
     if fee_cents > 0:
@@ -206,5 +215,24 @@ def settle_market(db: Session, market_id: str, outcome_id: str):
     market.status = "settled"
 
     db.commit()
+    
+    # 12. Send notifications after commit
+    # Send email AFTER successful commit
+    for kind, user, payout in notifications:
+        try:
+            if kind == "win":
+                send_settlement_win(
+                    user=user,
+                    market=market,
+                    payout_cents=payout,
+                )
+            else:
+                send_settlement_loss(
+                    user=user,
+                    market=market,
+                )
+        except Exception:
+            # Never break core flow because of email
+            pass
 
     return {"status": "settled", "market_id": market.id}
