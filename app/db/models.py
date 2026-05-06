@@ -406,6 +406,10 @@ class WalletBet(TimestampMixin, Base):
     # "open" (market not resolved), "settled_won", "settled_lost", "cancelled"
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
 
+    # Exact settlement result for this bet. Null while open; 0 for settled losses.
+    settled_payout_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     # link back to the ledger entry that locked the funds
     ledger_entry_id: Mapped[str | None] = mapped_column(
         String(36),

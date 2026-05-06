@@ -4,6 +4,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.api.deps import get_current_user
@@ -36,20 +37,32 @@ class BetHistoryItem(BaseModel):
 
     title: str
     category: str | None
+    market_status: str | None = None
+    close_at: datetime | None = None
+    projected_end_date: datetime | None = None
 
     prediction: Literal["yes", "no", "other"]
     result: Literal["pending", "correct", "incorrect", "cancelled"]
 
     created_at: datetime
+    settled_at: datetime | None = None
 
     stake_cents: int
+    anticipated_payout_cents: int | None = None
+    possible_gain_cents: int | None = None
+    settled_payout_cents: int | None = None
 
     yes_percentage: int | None = None
     no_percentage: int | None = None
 
 
 class PositionsTotals(BaseModel):
+    count: int
     stake_cents: int
+    possible_payout_cents: int
+    possible_gain_cents: int
+
+    # Backward-compatible aliases for older frontend code.
     current_value_cents: int
     unrealized_pnl_cents: int
 
@@ -69,6 +82,10 @@ class PositionItem(BaseModel):
     entry_price_cents: int | None = None
     current_price_cents: int | None = None
 
+    possible_payout_cents: int
+    possible_gain_cents: int
+
+    # Backward-compatible aliases for older frontend code.
     current_value_cents: int
     unrealized_pnl_cents: int
 
@@ -103,6 +120,78 @@ def _map_bet_result(
         return "cancelled"
     # fallback: market not resolved yet
     return "pending"
+
+
+def _estimate_possible_payout_cents(
+    *,
+    stake_cents: int,
+    selected_pool_cents: int,
+    other_pool_cents: int,
+    fee_rate_bps: int,
+) -> int:
+    """
+    Estimate what this bet would receive if its selected side wins using
+    current open market pools. This mirrors settlement pool-share math, but it
+    is not guaranteed because market pools can change before settlement.
+    """
+    total_pool = selected_pool_cents + other_pool_cents
+    if stake_cents <= 0 or selected_pool_cents <= 0 or total_pool <= 0:
+        return 0
+
+    fee_cents = (total_pool * fee_rate_bps) // 10000
+    distributable_cents = max(0, total_pool - fee_cents)
+
+    return (stake_cents * distributable_cents) // selected_pool_cents
+
+
+def _open_pools_by_market(
+    db: Session,
+    market_ids: set[str],
+) -> dict[str, dict[str, int]]:
+    if not market_ids:
+        return {}
+
+    rows = (
+        db.query(
+            models.WalletBet.market_id,
+            models.WalletBet.outcome_id,
+            func.coalesce(func.sum(models.WalletBet.amount_cents), 0),
+        )
+        .filter(
+            models.WalletBet.market_id.in_(market_ids),
+            models.WalletBet.status == "open",
+        )
+        .group_by(models.WalletBet.market_id, models.WalletBet.outcome_id)
+        .all()
+    )
+
+    pools: dict[str, dict[str, int]] = {}
+    for market_id, outcome_id, total in rows:
+        pools.setdefault(market_id, {})[outcome_id] = int(total or 0)
+
+    return pools
+
+
+def _estimated_payout_for_bet(
+    bet: models.WalletBet,
+    pools_by_market: dict[str, dict[str, int]],
+) -> int:
+    market = bet.market
+    pool_by_outcome = pools_by_market.get(bet.market_id, {})
+    selected_pool = pool_by_outcome.get(bet.outcome_id, 0)
+    other_pool = sum(
+        total
+        for outcome_id, total in pool_by_outcome.items()
+        if outcome_id != bet.outcome_id
+    )
+    fee_rate_bps = market.fee_rate_bps if market else 500
+
+    return _estimate_possible_payout_cents(
+        stake_cents=bet.amount_cents,
+        selected_pool_cents=selected_pool,
+        other_pool_cents=other_pool,
+        fee_rate_bps=fee_rate_bps,
+    )
 
 
 # -----------------------------
@@ -189,6 +278,7 @@ def get_my_bets(
         .all()
     )
 
+    pools_by_market = _open_pools_by_market(db, {b.market_id for b in bets})
     items: list[BetHistoryItem] = []
 
     for b in bets:
@@ -216,6 +306,12 @@ def get_my_bets(
             no_out.price_cents if no_out and no_out.price_cents is not None else None
         )
 
+        anticipated_payout: int | None = None
+        possible_gain: int | None = None
+        if b.status == "open":
+            anticipated_payout = _estimated_payout_for_bet(b, pools_by_market)
+            possible_gain = anticipated_payout - b.amount_cents
+
         items.append(
             BetHistoryItem(
                 id=b.id,
@@ -223,10 +319,17 @@ def get_my_bets(
                 outcome_id=b.outcome_id,
                 title=market.title if market else "",
                 category=market.category if market else None,
+                market_status=market.status if market else None,
+                close_at=market.close_at if market else None,
+                projected_end_date=market.projected_end_date if market else None,
                 prediction=side,
                 result=result,
                 created_at=b.created_at,
+                settled_at=b.settled_at,
                 stake_cents=b.amount_cents,
+                anticipated_payout_cents=anticipated_payout,
+                possible_gain_cents=possible_gain,
+                settled_payout_cents=b.settled_payout_cents,
                 yes_percentage=yes_pct,
                 no_percentage=no_pct,
             )
@@ -248,9 +351,9 @@ def get_my_positions(
     """
     Return open positions for the user.
 
-    NOTE: For now we keep current_value_cents == stake_cents and PnL == 0,
-    until you introduce dynamic pricing. The schema is already ready for
-    richer logic later.
+    possible_payout_cents estimates what the user could receive if the selected
+    side wins using current open market pools. It is an estimate, not a
+    guarantee, because more bets can arrive before settlement.
     """
 
     bets = (
@@ -267,24 +370,25 @@ def get_my_positions(
         .all()
     )
 
+    pools_by_market = _open_pools_by_market(db, {b.market_id for b in bets})
+
     positions: list[PositionItem] = []
 
     total_stake = 0
-    total_current = 0
+    total_possible_payout = 0
 
     for b in bets:
         market = b.market
         outcome = b.outcome
 
         side = _normalize_side(getattr(outcome, "label", None))
-
-        # For now: keep value = stake, pnl = 0.
         stake = b.amount_cents
-        current_value = stake
-        pnl = 0
+
+        possible_payout = _estimated_payout_for_bet(b, pools_by_market)
+        possible_gain = possible_payout - stake
 
         total_stake += stake
-        total_current += current_value
+        total_possible_payout += possible_payout
 
         positions.append(
             PositionItem(
@@ -298,16 +402,23 @@ def get_my_positions(
                 shares=b.shares,
                 entry_price_cents=b.price_cents_at_bet,
                 current_price_cents=outcome.price_cents if outcome else None,
-                current_value_cents=current_value,
-                unrealized_pnl_cents=pnl,
+                possible_payout_cents=possible_payout,
+                possible_gain_cents=possible_gain,
+                current_value_cents=possible_payout,
+                unrealized_pnl_cents=possible_gain,
                 created_at=b.created_at,
             )
         )
 
+    total_possible_gain = total_possible_payout - total_stake
+
     totals = PositionsTotals(
+        count=len(positions),
         stake_cents=total_stake,
-        current_value_cents=total_current,
-        unrealized_pnl_cents=total_current - total_stake,
+        possible_payout_cents=total_possible_payout,
+        possible_gain_cents=total_possible_gain,
+        current_value_cents=total_possible_payout,
+        unrealized_pnl_cents=total_possible_gain,
     )
 
     return PositionsOut(positions=positions, totals=totals)

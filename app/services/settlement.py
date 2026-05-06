@@ -1,5 +1,6 @@
 # app/services/settlement.py
 import logging
+from datetime import datetime
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -147,10 +148,14 @@ def settle_market(db: Session, market_id: str, outcome_id: str):
 
     # 9. Apply ledger entries
     notifications = []
-    
+    settled_at = datetime.utcnow()
+
     for x in payouts:
         bet = x["bet"]
         payout = x["payout"]
+
+        bet.settled_payout_cents = payout
+        bet.settled_at = settled_at
 
         if payout > 0:
             user_wallet = get_or_create_user_wallet(db, bet.user)
@@ -168,8 +173,8 @@ def settle_market(db: Session, market_id: str, outcome_id: str):
                 amount_cents=payout,
                 currency="KES",
                 kind="settlement_payout",
-                reference_type="market",
-                reference_id=market.id,
+                reference_type="wallet_bet",
+                reference_id=bet.id,
             )
             db.add(entry)
 
@@ -177,12 +182,12 @@ def settle_market(db: Session, market_id: str, outcome_id: str):
             user_bal.available_cents += payout
 
             bet.status = "settled_won"
-            
-            # Collect notification            
+
+            # Collect notification
             notifications.append(("win", bet.user, payout))
         else:
             bet.status = "settled_lost"
-            
+
             # Collect notification
             notifications.append(("loss", bet.user, 0))
 
