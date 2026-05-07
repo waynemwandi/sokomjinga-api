@@ -1,7 +1,7 @@
 # app/api/admin.py
 from datetime import date, datetime, timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -30,6 +30,31 @@ class AuthDayOut(BaseModel):
 class AuthTimeseriesOut(BaseModel):
     days: int
     points: list[AuthDayOut]
+
+
+class AdminUserOut(BaseModel):
+    id: str
+    email: str
+    name: str | None
+    is_active: bool
+    is_admin: bool
+    auth_provider: str | None
+    created_at: datetime
+    last_login_at: datetime | None
+    wallet_accounts: int
+    bets: int
+    deposits: int
+
+
+class AdminUsersOut(BaseModel):
+    items: list[AdminUserOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class UserStatusIn(BaseModel):
+    is_active: bool
 
 
 @router.get("/stats", response_model=StatsOut)
@@ -120,6 +145,178 @@ def auth_timeseries(
         )
 
     return AuthTimeseriesOut(days=days, points=points)
+
+
+@router.get("/users", response_model=AdminUsersOut)
+def list_users(
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(require_admin),
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    q: str | None = Query(None),
+):
+    wallet_count = (
+        db.query(
+            models.WalletAccount.user_id.label("user_id"),
+            func.count(models.WalletAccount.id).label("wallet_accounts"),
+        )
+        .filter(models.WalletAccount.user_id.isnot(None))
+        .group_by(models.WalletAccount.user_id)
+        .subquery()
+    )
+
+    bet_count = (
+        db.query(
+            models.WalletBet.user_id.label("user_id"),
+            func.count(models.WalletBet.id).label("bets"),
+        )
+        .group_by(models.WalletBet.user_id)
+        .subquery()
+    )
+
+    deposit_count = (
+        db.query(
+            models.WalletDeposit.user_id.label("user_id"),
+            func.count(models.WalletDeposit.id).label("deposits"),
+        )
+        .group_by(models.WalletDeposit.user_id)
+        .subquery()
+    )
+
+    last_login = (
+        db.query(
+            models.AuthEvent.user_id.label("user_id"),
+            func.max(models.AuthEvent.created_at).label("last_login_at"),
+        )
+        .filter(models.AuthEvent.event_type == "login")
+        .group_by(models.AuthEvent.user_id)
+        .subquery()
+    )
+
+    query = (
+        db.query(
+            models.User.id,
+            models.User.email,
+            models.User.name,
+            models.User.is_active,
+            models.User.is_admin,
+            models.User.created_at,
+            models.UserProfile.auth_provider,
+            last_login.c.last_login_at,
+            func.coalesce(wallet_count.c.wallet_accounts, 0).label("wallet_accounts"),
+            func.coalesce(bet_count.c.bets, 0).label("bets"),
+            func.coalesce(deposit_count.c.deposits, 0).label("deposits"),
+        )
+        .outerjoin(models.UserProfile, models.UserProfile.user_id == models.User.id)
+        .outerjoin(wallet_count, wallet_count.c.user_id == models.User.id)
+        .outerjoin(bet_count, bet_count.c.user_id == models.User.id)
+        .outerjoin(deposit_count, deposit_count.c.user_id == models.User.id)
+        .outerjoin(last_login, last_login.c.user_id == models.User.id)
+    )
+
+    if q:
+        needle = f"%{q.strip().lower()}%"
+        query = query.filter(
+            func.lower(models.User.email).like(needle)
+            | func.lower(func.coalesce(models.User.name, "")).like(needle)
+        )
+
+    total = query.count()
+    rows = (
+        query.order_by(models.User.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+        .all()
+    )
+
+    return AdminUsersOut(
+        items=[
+            AdminUserOut(
+                id=row.id,
+                email=row.email,
+                name=row.name,
+                is_active=row.is_active,
+                is_admin=row.is_admin,
+                auth_provider=row.auth_provider,
+                created_at=row.created_at,
+                last_login_at=row.last_login_at,
+                wallet_accounts=row.wallet_accounts or 0,
+                bets=row.bets or 0,
+                deposits=row.deposits or 0,
+            )
+            for row in rows
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.patch("/users/{user_id}/status", response_model=AdminUserOut)
+def update_user_status(
+    user_id: str,
+    payload: UserStatusIn,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(require_admin),
+):
+    user = db.query(models.User).filter(models.User.id == user_id).one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if user.is_admin and not payload.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Admin accounts cannot be deactivated from the dashboard",
+        )
+
+    user.is_active = payload.is_active
+    db.commit()
+
+    profile = (
+        db.query(models.UserProfile)
+        .filter(models.UserProfile.user_id == user.id)
+        .one_or_none()
+    )
+    last_login_at = (
+        db.query(func.max(models.AuthEvent.created_at))
+        .filter(
+            models.AuthEvent.user_id == user.id,
+            models.AuthEvent.event_type == "login",
+        )
+        .scalar()
+    )
+    wallet_accounts = (
+        db.query(func.count(models.WalletAccount.id))
+        .filter(models.WalletAccount.user_id == user.id)
+        .scalar()
+        or 0
+    )
+    bets = (
+        db.query(func.count(models.WalletBet.id))
+        .filter(models.WalletBet.user_id == user.id)
+        .scalar()
+        or 0
+    )
+    deposits = (
+        db.query(func.count(models.WalletDeposit.id))
+        .filter(models.WalletDeposit.user_id == user.id)
+        .scalar()
+        or 0
+    )
+
+    return AdminUserOut(
+        id=user.id,
+        email=user.email,
+        name=user.name,
+        is_active=user.is_active,
+        is_admin=user.is_admin,
+        auth_provider=profile.auth_provider if profile else None,
+        created_at=user.created_at,
+        last_login_at=last_login_at,
+        wallet_accounts=wallet_accounts,
+        bets=bets,
+        deposits=deposits,
+    )
 
 
 @router.get("/wallets/summary")

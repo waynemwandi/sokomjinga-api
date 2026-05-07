@@ -3,7 +3,7 @@
 from urllib.parse import urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
@@ -110,6 +110,11 @@ async def google_exchange(code: str, db: Session = Depends(get_db)):
             UserProfile.user_id == user.id
         ).one_or_none() or UserProfile(user_id=user.id)
         db.add(prof)
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Account is inactive"
+        )
 
     # Mark Google provenance
     prof.auth_provider = "google"

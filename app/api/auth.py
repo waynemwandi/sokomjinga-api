@@ -10,7 +10,6 @@ from app.core.security import (
     create_access_token,
     create_refresh_token,
     decode_token,
-    hash_password,
     verify_password,
 )
 from app.db import models
@@ -55,6 +54,11 @@ class RefreshIn(BaseModel):
 # ---- Endpoints
 @router.post("/signup", response_model=UserOut, status_code=201)
 def signup(payload: SignupIn, db: Session = Depends(get_db)):
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Email and password sign up is currently disabled. Please use Google.",
+    )
+
     email = payload.email.lower().strip()
     existing = db.query(models.User).filter(models.User.email == email).first()
     if existing:
@@ -90,6 +94,10 @@ def login(payload: LoginIn, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials"
         )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Account is inactive"
+        )
     # `user.id` is str (not Optional), so no type error now
     models.log_auth_event(db, user.id, "login", "password")
     db.commit()
@@ -112,8 +120,17 @@ def me(current_user: models.User = Depends(get_current_user)):
 
 
 @router.post("/refresh", response_model=TokenOut)
-def refresh(body: RefreshIn):
+def refresh(body: RefreshIn, db: Session = Depends(get_db)):
     data = decode_token(body.refresh_token)
     if not data or data.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    user = db.query(models.User).filter(models.User.id == data["sub"]).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Account is inactive"
+        )
+
     return TokenOut(access_token=create_access_token(data["sub"]))
