@@ -65,7 +65,7 @@ python -m scripts.test_email
 ## Project Structure
 
 - app/
-  - main.py -> FastAPI entrypoint
+- main.py -> FastAPI entrypoint
 - api/ -> route handlers
 - db/ -> models, session, migrations
 - schemas/ -> Pydantic DTOs

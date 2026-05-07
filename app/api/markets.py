@@ -2,7 +2,7 @@
 from collections import defaultdict
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -46,6 +46,7 @@ def market_to_dict(m: Market, db: Session) -> dict:
         "title": m.title,
         "description": m.description,
         "status": m.status,
+        "is_archived": m.is_archived,
         "image_url": m.image_url,
         "category": m.category,
         "close_at": m.close_at,
@@ -81,6 +82,14 @@ def outcome_to_dict(o: Outcome) -> dict:
 
 
 BASE_LIQUIDITY_CENTS = 100_00  # KES 100.00 as a simple buffer; tweak later if needed
+
+
+def coerce_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def recompute_market_prices(db: Session, market: Market) -> None:
@@ -176,9 +185,25 @@ def compute_market_volume_cents(db: Session, market_id: str) -> int:
 
 
 # ---------- Markets ----------
-@router.get("")  # List markets - PUBLIC
-def list_markets(db: Session = Depends(get_db)):
-    rows = db.query(Market).order_by(Market.created_at.desc()).all()
+@router.get("")  # List markets - PUBLIC by default; admins can include archived
+def list_markets(
+    request: Request,
+    include_archived: bool = False,
+    db: Session = Depends(get_db),
+):
+    if include_archived:
+        user = deps.get_current_user(request, db)
+        if not getattr(user, "is_admin", False):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin access required",
+            )
+
+    query = db.query(Market)
+    if not include_archived:
+        query = query.filter(Market.is_archived.is_(False))
+
+    rows = query.order_by(Market.created_at.desc()).all()
     return [market_to_dict(m, db) for m in rows]
 
 
@@ -228,6 +253,7 @@ def create_market(payload: dict, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="close_at must be ISO8601")
 
     m.status = (payload.get("status") or "open").strip()
+    m.is_archived = coerce_bool(payload.get("is_archived", False))
 
     db.add(m)
     db.commit()
@@ -305,6 +331,9 @@ def update_market(market_id: str, payload: dict, db: Session = Depends(get_db)):
 
     if "status" in payload:
         m.status = (payload.get("status") or "").strip() or m.status
+
+    if "is_archived" in payload:
+        m.is_archived = coerce_bool(payload.get("is_archived"))
 
     db.add(m)
     db.commit()

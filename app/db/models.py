@@ -53,6 +53,9 @@ class Market(TimestampMixin, Base):
     close_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     projected_end_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    is_archived: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
     outcomes: Mapped[list["Outcome"]] = relationship(
         "Outcome", back_populates="market", cascade="all, delete-orphan"
     )
