@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.api import deps
 from app.db import models
 from app.db.session import get_db
+from app.services.notifications import send_withdrawal_requested
 from app.services.mpesa import trigger_stk_push
 
 router = APIRouter(prefix="/wallet", tags=["wallet"])
@@ -57,6 +58,25 @@ class DepositResponse(BaseModel):
 class ConfirmDepositRequest(BaseModel):
     mpesa_reference: str
     mpesa_phone: str | None = None
+
+
+MINIMUM_REMAINING_BALANCE_CENTS = 100_00
+
+
+class CreateWithdrawalRequest(BaseModel):
+    amount_cents: int = Field(..., gt=0)
+
+
+class WithdrawalResponse(BaseModel):
+    id: str
+    status: str
+    amount_cents: int
+    currency: str
+    mpesa_phone: str | None = None
+    reason: str | None = None
+    mpesa_reference: str | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 def get_or_create_user_wallet(db: Session, user: models.User) -> models.WalletAccount:
@@ -355,6 +375,113 @@ def confirm_deposit_dev_only(
         amount_cents=dep.amount_cents,
         currency=dep.currency,
     )
+
+
+@router.post(
+    "/withdrawals",
+    response_model=WithdrawalResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_withdrawal(
+    payload: CreateWithdrawalRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(deps.get_current_user),
+):
+    profile = db.get(models.UserProfile, current_user.id)
+    if not profile or not profile.phone_e164:
+        raise HTTPException(
+            status_code=400,
+            detail="Phone number not configured",
+        )
+
+    existing_pending = (
+        db.query(models.WalletWithdrawal)
+        .filter(
+            models.WalletWithdrawal.user_id == current_user.id,
+            models.WalletWithdrawal.status.in_(["pending", "processing"]),
+        )
+        .first()
+    )
+    if existing_pending:
+        raise HTTPException(
+            status_code=400,
+            detail="You already have a withdrawal in progress",
+        )
+
+    user_wallet = get_or_create_user_wallet(db, current_user)
+    user_balance = (
+        db.query(models.WalletBalance)
+        .filter(models.WalletBalance.account_id == user_wallet.id)
+        .with_for_update()
+        .one()
+    )
+
+    if user_balance.available_cents - payload.amount_cents < MINIMUM_REMAINING_BALANCE_CENTS:
+        raise HTTPException(
+            status_code=400,
+            detail="KES 100 stays available for account activity",
+        )
+
+    withdrawal = models.WalletWithdrawal(
+        user_id=current_user.id,
+        account_id=user_wallet.id,
+        amount_cents=payload.amount_cents,
+        currency=user_wallet.currency,
+        status="pending",
+        mpesa_phone=profile.phone_e164,
+    )
+    db.add(withdrawal)
+    user_balance.available_cents -= payload.amount_cents
+    user_balance.pending_cents += payload.amount_cents
+    db.commit()
+    db.refresh(withdrawal)
+
+    try:
+        send_withdrawal_requested(current_user, withdrawal)
+    except Exception:
+        pass
+
+    return WithdrawalResponse(
+        id=withdrawal.id,
+        status=withdrawal.status,
+        amount_cents=withdrawal.amount_cents,
+        currency=withdrawal.currency,
+        mpesa_phone=withdrawal.mpesa_phone,
+        reason=withdrawal.reason,
+        mpesa_reference=withdrawal.mpesa_reference,
+        created_at=withdrawal.created_at,
+        updated_at=withdrawal.updated_at,
+    )
+
+
+@router.get("/withdrawals", response_model=list[WithdrawalResponse])
+def list_my_withdrawals(
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(deps.get_current_user),
+):
+    rows = (
+        db.query(models.WalletWithdrawal)
+        .filter(models.WalletWithdrawal.user_id == current_user.id)
+        .order_by(models.WalletWithdrawal.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        WithdrawalResponse(
+            id=row.id,
+            status=row.status,
+            amount_cents=row.amount_cents,
+            currency=row.currency,
+            mpesa_phone=row.mpesa_phone,
+            reason=row.reason,
+            mpesa_reference=row.mpesa_reference,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+        for row in rows
+    ]
 
 
 # Query/poll deposit status to inform frontend of stk status (pending, stk_sent, stk_failed, confirmed)

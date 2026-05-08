@@ -10,6 +10,11 @@ from app.api import deps
 from app.api.deps import get_db, require_admin
 from app.db import models
 from app.db.models import WalletAccount
+from app.api.wallet import get_or_create_mpesa_clearing_account
+from app.services.notifications import (
+    send_withdrawal_completed,
+    send_withdrawal_rejected,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -55,6 +60,34 @@ class AdminUsersOut(BaseModel):
 
 class UserStatusIn(BaseModel):
     is_active: bool
+
+
+class AdminWithdrawalOut(BaseModel):
+    id: str
+    user_id: str
+    email: str
+    name: str | None
+    amount_cents: int
+    currency: str
+    status: str
+    mpesa_phone: str | None
+    mpesa_reference: str | None
+    reason: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminWithdrawalsOut(BaseModel):
+    items: list[AdminWithdrawalOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class WithdrawalStatusIn(BaseModel):
+    status: str
+    mpesa_reference: str | None = None
+    reason: str | None = None
 
 
 @router.get("/stats", response_model=StatsOut)
@@ -452,3 +485,178 @@ def list_wallets(
         "limit": limit,
         "offset": offset,
     }
+
+
+def _admin_withdrawal_out(row) -> AdminWithdrawalOut:
+    withdrawal, user = row
+    return AdminWithdrawalOut(
+        id=withdrawal.id,
+        user_id=withdrawal.user_id,
+        email=user.email,
+        name=user.name,
+        amount_cents=withdrawal.amount_cents,
+        currency=withdrawal.currency,
+        status=withdrawal.status,
+        mpesa_phone=withdrawal.mpesa_phone,
+        mpesa_reference=withdrawal.mpesa_reference,
+        reason=withdrawal.reason,
+        created_at=withdrawal.created_at,
+        updated_at=withdrawal.updated_at,
+    )
+
+
+@router.get("/withdrawals", response_model=AdminWithdrawalsOut)
+def list_withdrawals(
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(require_admin),
+    status_filter: str | None = Query(None, alias="status"),
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    query = (
+        db.query(models.WalletWithdrawal, models.User)
+        .join(models.User, models.User.id == models.WalletWithdrawal.user_id)
+    )
+
+    if status_filter and status_filter != "all":
+        query = query.filter(models.WalletWithdrawal.status == status_filter)
+
+    total = query.count()
+    rows = (
+        query.order_by(models.WalletWithdrawal.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+        .all()
+    )
+
+    return AdminWithdrawalsOut(
+        items=[_admin_withdrawal_out(row) for row in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.patch("/withdrawals/{withdrawal_id}", response_model=AdminWithdrawalOut)
+def update_withdrawal_status(
+    withdrawal_id: str,
+    payload: WithdrawalStatusIn,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(require_admin),
+):
+    next_status = payload.status.strip().lower()
+    if next_status not in {"processing", "completed", "failed"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid withdrawal status",
+        )
+
+    withdrawal = (
+        db.query(models.WalletWithdrawal)
+        .filter(models.WalletWithdrawal.id == withdrawal_id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if not withdrawal:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Withdrawal not found",
+        )
+
+    if withdrawal.status in {"completed", "failed"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Withdrawal is already {withdrawal.status}",
+        )
+
+    user_wallet = (
+        db.query(models.WalletAccount)
+        .filter(models.WalletAccount.id == withdrawal.account_id)
+        .with_for_update()
+        .one()
+    )
+    user_balance = (
+        db.query(models.WalletBalance)
+        .filter(models.WalletBalance.account_id == user_wallet.id)
+        .with_for_update()
+        .one()
+    )
+
+    if next_status == "processing":
+        withdrawal.status = "processing"
+        db.commit()
+    elif next_status == "failed":
+        reason = (payload.reason or "").strip()
+        if not reason:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Reason is required when rejecting a withdrawal",
+            )
+
+        if user_balance.pending_cents < withdrawal.amount_cents:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Wallet pending balance is lower than withdrawal amount",
+            )
+
+        withdrawal.status = "failed"
+        withdrawal.reason = reason
+        user_balance.pending_cents -= withdrawal.amount_cents
+        user_balance.available_cents += withdrawal.amount_cents
+        db.commit()
+
+        try:
+            send_withdrawal_rejected(withdrawal.user, withdrawal)
+        except Exception:
+            pass
+    else:
+        reference = (payload.mpesa_reference or "").strip()
+        if not reference:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="M-Pesa reference is required when sending a withdrawal",
+            )
+
+        mpesa_clearing = get_or_create_mpesa_clearing_account(db)
+        mpesa_balance = (
+            db.query(models.WalletBalance)
+            .filter(models.WalletBalance.account_id == mpesa_clearing.id)
+            .with_for_update()
+            .one()
+        )
+
+        if user_balance.pending_cents < withdrawal.amount_cents:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Wallet pending balance is lower than withdrawal amount",
+            )
+
+        entry = models.WalletLedgerEntry(
+            debit_account_id=user_wallet.id,
+            credit_account_id=mpesa_clearing.id,
+            amount_cents=withdrawal.amount_cents,
+            currency=withdrawal.currency,
+            kind="withdrawal",
+            reference_type="wallet_withdrawal",
+            reference_id=withdrawal.id,
+            description="Manual withdrawal sent",
+        )
+        db.add(entry)
+        withdrawal.status = "completed"
+        withdrawal.mpesa_reference = reference
+        user_balance.pending_cents -= withdrawal.amount_cents
+        mpesa_balance.available_cents += withdrawal.amount_cents
+        db.commit()
+
+        try:
+            send_withdrawal_completed(withdrawal.user, withdrawal)
+        except Exception:
+            pass
+
+    row = (
+        db.query(models.WalletWithdrawal, models.User)
+        .join(models.User, models.User.id == models.WalletWithdrawal.user_id)
+        .filter(models.WalletWithdrawal.id == withdrawal_id)
+        .one()
+    )
+    return _admin_withdrawal_out(row)

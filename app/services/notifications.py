@@ -6,6 +6,15 @@ from app.services.email_templates.deposit_success import render_deposit_success_
 from app.services.email_templates.market_created import render_market_created_email
 from app.services.email_templates.settlement_loss import render_settlement_loss_email
 from app.services.email_templates.settlement_win import render_settlement_win_email
+from app.services.email_templates.withdrawal_completed import (
+    render_withdrawal_completed_email,
+)
+from app.services.email_templates.withdrawal_rejected import (
+    render_withdrawal_rejected_email,
+)
+from app.services.email_templates.withdrawal_requested import (
+    render_withdrawal_requested_email,
+)
 
 
 def send_bet_confirmation(user, market, outcome, amount_cents: int):
@@ -70,3 +79,21 @@ def send_market_created(db, market):
             )
         except Exception:
             pass
+
+
+def send_withdrawal_requested(user, withdrawal):
+    subject = "Withdrawal Request Received"
+    body = render_withdrawal_requested_email(user=user, withdrawal=withdrawal)
+    send_email(to_email=user.email, subject=subject, body=body)
+
+
+def send_withdrawal_completed(user, withdrawal):
+    subject = "Withdrawal Sent"
+    body = render_withdrawal_completed_email(user=user, withdrawal=withdrawal)
+    send_email(to_email=user.email, subject=subject, body=body)
+
+
+def send_withdrawal_rejected(user, withdrawal):
+    subject = "Withdrawal Not Processed"
+    body = render_withdrawal_rejected_email(user=user, withdrawal=withdrawal)
+    send_email(to_email=user.email, subject=subject, body=body)
