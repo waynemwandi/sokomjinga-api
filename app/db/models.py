@@ -165,6 +165,10 @@ class UserProfile(TimestampMixin, Base):
         String(255), unique=True, nullable=True
     )
     avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    username: Mapped[str | None] = mapped_column(
+        String(24), unique=True, nullable=True, index=True
+    )
+    bio: Mapped[str | None] = mapped_column(String(280), nullable=True)
 
 
 class AuthEvent(Base):
