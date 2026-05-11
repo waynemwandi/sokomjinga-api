@@ -25,6 +25,18 @@ router = APIRouter()
 def market_to_dict(m: Market, db: Session) -> dict:
     volume_cents = compute_market_volume_cents(db, m.id)
 
+    settlement = (
+        db.query(models.MarketSettlement)
+        .filter(models.MarketSettlement.market_id == m.id)
+        .first()
+    )
+    settlement_outcome = None
+    if settlement:
+        settlement_outcome = next(
+            (o for o in (m.outcomes or []) if o.id == settlement.outcome_id),
+            None,
+        )
+
     # compute stake per outcome
     stakes = (
         db.query(
@@ -54,6 +66,19 @@ def market_to_dict(m: Market, db: Session) -> dict:
         "created_at": m.created_at,
         "updated_at": m.updated_at,
         "volume_cents": volume_cents,
+        "winning_outcome_id": settlement.outcome_id if settlement else None,
+        "winning_outcome_label": settlement_outcome.label if settlement_outcome else None,
+        "settled_at": settlement.created_at if settlement else None,
+        "settlement": {
+            "id": settlement.id,
+            "outcome_id": settlement.outcome_id,
+            "outcome_label": settlement_outcome.label if settlement_outcome else None,
+            "total_pool_cents": settlement.total_pool_cents,
+            "fee_cents": settlement.fee_cents,
+            "created_at": settlement.created_at,
+        }
+        if settlement
+        else None,
         "outcomes": [
             {
                 "id": o.id,
@@ -675,3 +700,4 @@ def get_market_price_history(
         "market_id": market.id,
         "outcomes": resp_outcomes,
     }
+
