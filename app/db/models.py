@@ -64,6 +64,12 @@ class Market(TimestampMixin, Base):
         nullable=False,
         default=500,  # 5% = 500 basis points
     )
+    starter_pool_cents: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=100,  # KES 1 on each Yes/No side for starter liquidity
+        server_default=text("100"),
+    )
 
 
 class MarketSettlement(Base):

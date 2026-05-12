@@ -22,8 +22,16 @@ router = APIRouter()
 
 
 # ----------- Helpers -----------
+DEFAULT_STARTER_POOL_CENTS = 100  # KES 1 on each Yes/No side
+
+
+def get_market_starter_pool_cents(market: Market) -> int:
+    return max(0, int(getattr(market, "starter_pool_cents", 100) or 0))
+
+
 def market_to_dict(m: Market, db: Session) -> dict:
     volume_cents = compute_market_volume_cents(db, m.id)
+    starter_pool_cents = get_market_starter_pool_cents(m)
 
     settlement = (
         db.query(models.MarketSettlement)
@@ -66,6 +74,7 @@ def market_to_dict(m: Market, db: Session) -> dict:
         "created_at": m.created_at,
         "updated_at": m.updated_at,
         "volume_cents": volume_cents,
+        "starter_pool_cents": starter_pool_cents,
         "winning_outcome_id": settlement.outcome_id if settlement else None,
         "winning_outcome_label": settlement_outcome.label if settlement_outcome else None,
         "settled_at": settlement.created_at if settlement else None,
@@ -84,7 +93,9 @@ def market_to_dict(m: Market, db: Session) -> dict:
                 "id": o.id,
                 "label": o.label,
                 "price_cents": o.price_cents,
-                "total_stake_cents": stake_map.get(o.id, 0),
+                "real_stake_cents": stake_map.get(o.id, 0),
+                "starter_pool_cents": starter_pool_cents,
+                "total_stake_cents": stake_map.get(o.id, 0) + starter_pool_cents,
                 "status": o.status,
                 "created_at": o.created_at,
                 "updated_at": o.updated_at,
@@ -106,9 +117,6 @@ def outcome_to_dict(o: Outcome) -> dict:
     }
 
 
-BASE_LIQUIDITY_CENTS = 100_00  # KES 100.00 as a simple buffer; tweak later if needed
-
-
 def coerce_bool(value) -> bool:
     if isinstance(value, bool):
         return value
@@ -119,10 +127,10 @@ def coerce_bool(value) -> bool:
 
 def recompute_market_prices(db: Session, market: Market) -> None:
     """
-    Recompute YES/NO prices for a market based on total open stake, with a liquidity buffer.
+    Recompute YES/NO prices from real open stake plus a tiny starter pool.
 
     price_cents ~ probability * 100, where:
-      prob_yes = (stake_yes + K) / (stake_yes + stake_no + 2K)
+      prob_yes = (stake_yes + starter) / (stake_yes + stake_no + 2 * starter)
     """
     outcomes = list(market.outcomes or [])
 
@@ -157,7 +165,7 @@ def recompute_market_prices(db: Session, market: Market) -> None:
         or 0
     )
 
-    K = BASE_LIQUIDITY_CENTS
+    K = get_market_starter_pool_cents(market)
 
     denom = stake_yes + stake_no + 2 * K
     if denom <= 0:
@@ -183,7 +191,7 @@ def recompute_market_prices(db: Session, market: Market) -> None:
             market_id=market.id,
             outcome_id=yes.id,
             price_cents=yes.price_cents or 0,
-            total_stake_cents=stake_yes,
+            total_stake_cents=stake_yes + K,
         )
     )
     snapshots.append(
@@ -191,7 +199,7 @@ def recompute_market_prices(db: Session, market: Market) -> None:
             market_id=market.id,
             outcome_id=no.id,
             price_cents=no.price_cents or 0,
-            total_stake_cents=stake_no,
+            total_stake_cents=stake_no + K,
         )
     )
 
@@ -259,6 +267,20 @@ def create_market(payload: dict, db: Session = Depends(get_db)):
     m.description = payload.get("description")
     m.image_url = payload.get("image_url")
     m.category = payload.get("category")
+    try:
+        m.starter_pool_cents = int(
+            payload.get("starter_pool_cents") or DEFAULT_STARTER_POOL_CENTS
+        )
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail="starter_pool_cents must be an integer",
+        )
+    if m.starter_pool_cents < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="starter_pool_cents must be zero or greater",
+        )
 
     close_at = payload.get("close_at")
     projected_end_date = payload.get("projected_end_date")
@@ -298,6 +320,8 @@ def create_market(payload: dict, db: Session = Depends(get_db)):
     )
 
     db.add_all([yes, no])
+    db.flush()
+    recompute_market_prices(db, m)
     db.commit()
     try:
         send_market_created(db, m)
@@ -359,6 +383,22 @@ def update_market(market_id: str, payload: dict, db: Session = Depends(get_db)):
 
     if "is_archived" in payload:
         m.is_archived = coerce_bool(payload.get("is_archived"))
+
+    if "starter_pool_cents" in payload:
+        try:
+            starter_pool_cents = int(payload.get("starter_pool_cents"))
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="starter_pool_cents must be an integer",
+            )
+        if starter_pool_cents < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="starter_pool_cents must be zero or greater",
+            )
+        m.starter_pool_cents = starter_pool_cents
+        recompute_market_prices(db, m)
 
     db.add(m)
     db.commit()

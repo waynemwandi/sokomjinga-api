@@ -178,12 +178,16 @@ def _estimated_payout_for_bet(
 ) -> int:
     market = bet.market
     pool_by_outcome = pools_by_market.get(bet.market_id, {})
-    selected_pool = pool_by_outcome.get(bet.outcome_id, 0)
+    starter_pool_cents = max(
+        0,
+        int(getattr(market, "starter_pool_cents", 100) or 0),
+    )
+    selected_pool = pool_by_outcome.get(bet.outcome_id, 0) + starter_pool_cents
     other_pool = sum(
         total
         for outcome_id, total in pool_by_outcome.items()
         if outcome_id != bet.outcome_id
-    )
+    ) + starter_pool_cents
     fee_rate_bps = market.fee_rate_bps if market else 500
 
     return _estimate_possible_payout_cents(
