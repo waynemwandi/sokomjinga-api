@@ -11,6 +11,7 @@ from app.api.auth import router as auth_router
 from app.api.daraja import router as daraja_router
 from app.api.google_auth import router as google_router
 from app.api.health import router as health_router
+from app.api.markets import questions_router
 from app.api.markets import router as markets_router
 from app.api.me import router as me_router
 from app.api.profile import router as profile_router
@@ -57,6 +58,7 @@ def root():
 # Routers
 app.include_router(health_router)
 app.include_router(markets_router, prefix="/markets", tags=["markets"])
+app.include_router(questions_router)
 app.include_router(auth_router)
 app.include_router(profile_router)
 app.include_router(google_router)

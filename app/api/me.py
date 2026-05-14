@@ -130,18 +130,14 @@ def _estimate_possible_payout_cents(
     fee_rate_bps: int,
 ) -> int:
     """
-    Estimate what this bet would receive if its selected side wins using
-    current open market pools. This mirrors settlement pool-share math, but it
-    is not guaranteed because market pools can change before settlement.
+    Estimate display payout using current market pools plus starter display
+    liquidity. This is intentionally a UI estimate, not settlement accounting.
     """
     total_pool = selected_pool_cents + other_pool_cents
     if stake_cents <= 0 or selected_pool_cents <= 0 or total_pool <= 0:
         return 0
 
-    fee_cents = (total_pool * fee_rate_bps) // 10000
-    distributable_cents = max(0, total_pool - fee_cents)
-
-    return (stake_cents * distributable_cents) // selected_pool_cents
+    return (stake_cents * total_pool) // selected_pool_cents
 
 
 def _open_pools_by_market(
@@ -178,16 +174,14 @@ def _estimated_payout_for_bet(
 ) -> int:
     market = bet.market
     pool_by_outcome = pools_by_market.get(bet.market_id, {})
-    starter_pool_cents = max(
-        0,
-        int(getattr(market, "starter_pool_cents", 100) or 0),
-    )
-    selected_pool = pool_by_outcome.get(bet.outcome_id, 0) + starter_pool_cents
+    starter_pool = max(0, int(getattr(market, "starter_pool_cents", 100) or 0))
+    outcome_count = len(getattr(market, "outcomes", []) or [])
+    selected_pool = pool_by_outcome.get(bet.outcome_id, 0) + starter_pool
     other_pool = sum(
         total
         for outcome_id, total in pool_by_outcome.items()
         if outcome_id != bet.outcome_id
-    ) + starter_pool_cents
+    ) + (starter_pool * max(0, outcome_count - 1))
     fee_rate_bps = market.fee_rate_bps if market else 500
 
     return _estimate_possible_payout_cents(

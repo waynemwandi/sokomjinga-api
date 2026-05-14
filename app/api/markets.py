@@ -19,6 +19,7 @@ from app.services.notifications import send_bet_confirmation, send_market_create
 from app.services.settlement import settle_market
 
 router = APIRouter()
+questions_router = APIRouter(prefix="/market-questions", tags=["market-questions"])
 
 
 # ----------- Helpers -----------
@@ -95,7 +96,8 @@ def market_to_dict(m: Market, db: Session) -> dict:
                 "price_cents": o.price_cents,
                 "real_stake_cents": stake_map.get(o.id, 0),
                 "starter_pool_cents": starter_pool_cents,
-                "total_stake_cents": stake_map.get(o.id, 0) + starter_pool_cents,
+                "display_pool_cents": stake_map.get(o.id, 0) + starter_pool_cents,
+                "total_stake_cents": stake_map.get(o.id, 0),
                 "status": o.status,
                 "created_at": o.created_at,
                 "updated_at": o.updated_at,
@@ -123,6 +125,147 @@ def coerce_bool(value) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def parse_optional_datetime(value, field_name: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be ISO8601")
+
+
+def question_market_title(question_title: str, option_label: str) -> str:
+    return f"{question_title} - {option_label}"
+
+
+def add_yes_no_outcomes(db: Session, market: Market) -> None:
+    db.add_all(
+        [
+            Outcome(
+                market_id=market.id,
+                label="Yes",
+                price_cents=50,
+                status="open",
+            ),
+            Outcome(
+                market_id=market.id,
+                label="No",
+                price_cents=50,
+                status="open",
+            ),
+        ]
+    )
+    db.flush()
+    recompute_market_prices(db, market)
+
+
+def get_binary_outcome(market: Market, label: str) -> Outcome | None:
+    lower = label.lower()
+    return next(
+        (o for o in (market.outcomes or []) if (o.label or "").strip().lower() == lower),
+        None,
+    )
+
+
+def settle_empty_market(db: Session, market: Market, outcome: Outcome) -> dict:
+    """Settle a market with no real bets without moving wallet money."""
+    existing = (
+        db.query(models.MarketSettlement)
+        .filter(models.MarketSettlement.market_id == market.id)
+        .first()
+    )
+    if existing:
+        raise RuntimeError("Market already settled")
+
+    settlement = models.MarketSettlement(
+        market_id=market.id,
+        outcome_id=outcome.id,
+        total_pool_cents=0,
+        fee_cents=0,
+    )
+    market.status = "settled"
+    db.add(settlement)
+    db.commit()
+    db.refresh(settlement)
+
+    return {
+        "status": "settled",
+        "market_id": market.id,
+        "outcome_id": outcome.id,
+        "total_pool_cents": 0,
+        "fee_cents": 0,
+        "payouts": [],
+    }
+
+
+def count_open_bets(db: Session, market_id: str) -> int:
+    return (
+        db.query(func.count(models.WalletBet.id))
+        .filter(
+            models.WalletBet.market_id == market_id,
+            models.WalletBet.status == "open",
+        )
+        .scalar()
+        or 0
+    )
+
+
+def question_to_dict(q: models.MarketQuestion, db: Session) -> dict:
+    child_markets = sorted(q.markets or [], key=lambda m: m.option_order)
+    options = []
+    total_volume_cents = 0
+    for child in child_markets:
+        child_dict = market_to_dict(child, db)
+        total_volume_cents += child_dict.get("volume_cents", 0) or 0
+        yes = next(
+            (
+                o
+                for o in child_dict.get("outcomes", [])
+                if (o.get("label") or "").lower() == "yes"
+            ),
+            None,
+        )
+        no = next(
+            (
+                o
+                for o in child_dict.get("outcomes", [])
+                if (o.get("label") or "").lower() == "no"
+            ),
+            None,
+        )
+        options.append(
+            {
+                "id": child.id,
+                "market_id": child.id,
+                "label": child.option_label or child.title,
+                "order": child.option_order,
+                "status": child.status,
+                "yes_price_cents": yes.get("price_cents") if yes else None,
+                "no_price_cents": no.get("price_cents") if no else None,
+                "yes_outcome_id": yes.get("id") if yes else None,
+                "no_outcome_id": no.get("id") if no else None,
+                "volume_cents": child_dict.get("volume_cents", 0),
+                "market": child_dict,
+            }
+        )
+
+    return {
+        "id": q.id,
+        "title": q.title,
+        "description": q.description,
+        "status": q.status,
+        "is_archived": q.is_archived,
+        "image_url": q.image_url,
+        "category": q.category,
+        "close_at": q.close_at,
+        "projected_end_date": q.projected_end_date,
+        "created_at": q.created_at,
+        "updated_at": q.updated_at,
+        "volume_cents": total_volume_cents,
+        "options": options,
+    }
 
 
 def recompute_market_prices(db: Session, market: Market) -> None:
@@ -222,6 +365,7 @@ def compute_market_volume_cents(db: Session, market_id: str) -> int:
 def list_markets(
     request: Request,
     include_archived: bool = False,
+    include_group_children: bool = False,
     db: Session = Depends(get_db),
 ):
     if include_archived:
@@ -235,6 +379,8 @@ def list_markets(
     query = db.query(Market)
     if not include_archived:
         query = query.filter(Market.is_archived.is_(False))
+    if not include_group_children:
+        query = query.filter(Market.question_id.is_(None))
 
     rows = query.order_by(Market.created_at.desc()).all()
     return [market_to_dict(m, db) for m in rows]
@@ -282,22 +428,11 @@ def create_market(payload: dict, db: Session = Depends(get_db)):
             detail="starter_pool_cents must be zero or greater",
         )
 
-    close_at = payload.get("close_at")
-    projected_end_date = payload.get("projected_end_date")
-    if projected_end_date:
-        try:
-            m.projected_end_date = datetime.fromisoformat(projected_end_date)
-        except Exception:
-            raise HTTPException(
-                status_code=400,
-                detail="projected_end_date must be ISO8601",
-            )
-    if close_at:
-        # accept "YYYY-MM-DDTHH:MM:SS" or "YYYY-MM-DD"
-        try:
-            m.close_at = datetime.fromisoformat(close_at)
-        except Exception:
-            raise HTTPException(status_code=400, detail="close_at must be ISO8601")
+    m.close_at = parse_optional_datetime(payload.get("close_at"), "close_at")
+    m.projected_end_date = parse_optional_datetime(
+        payload.get("projected_end_date"),
+        "projected_end_date",
+    )
 
     m.status = (payload.get("status") or "open").strip()
     m.is_archived = coerce_bool(payload.get("is_archived", False))
@@ -305,23 +440,7 @@ def create_market(payload: dict, db: Session = Depends(get_db)):
     db.add(m)
     db.commit()
     db.refresh(m)
-    # Auto-create YES/NO outcomes at 50/50
-    yes = Outcome(
-        market_id=m.id,
-        label="Yes",
-        price_cents=50,
-        status="open",
-    )
-    no = Outcome(
-        market_id=m.id,
-        label="No",
-        price_cents=50,
-        status="open",
-    )
-
-    db.add_all([yes, no])
-    db.flush()
-    recompute_market_prices(db, m)
+    add_yes_no_outcomes(db, m)
     db.commit()
     try:
         send_market_created(db, m)
@@ -439,6 +558,211 @@ def settle_market_endpoint(
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
+
+
+# ---------- Market questions (one question, many Yes/No child markets) ----------
+@questions_router.get("")
+def list_market_questions(
+    request: Request,
+    include_archived: bool = False,
+    db: Session = Depends(get_db),
+):
+    if include_archived:
+        user = deps.get_current_user(request, db)
+        if not getattr(user, "is_admin", False):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin access required",
+            )
+
+    query = db.query(models.MarketQuestion)
+    if not include_archived:
+        query = query.filter(models.MarketQuestion.is_archived.is_(False))
+
+    rows = query.order_by(models.MarketQuestion.created_at.desc()).all()
+    return [question_to_dict(q, db) for q in rows]
+
+
+@questions_router.get("/{question_id}")
+def get_market_question(question_id: str, db: Session = Depends(get_db)):
+    q = db.query(models.MarketQuestion).filter(models.MarketQuestion.id == question_id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Market question not found")
+    return question_to_dict(q, db)
+
+
+@questions_router.post(
+    "",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(deps.require_admin)],
+)
+def create_market_question(payload: dict, db: Session = Depends(get_db)):
+    title = (payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+
+    raw_options = payload.get("options") or []
+    if not isinstance(raw_options, list) or len(raw_options) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="At least two options are required",
+        )
+
+    labels: list[str] = []
+    for item in raw_options:
+        label = (item.get("label") if isinstance(item, dict) else str(item)).strip()
+        if not label:
+            raise HTTPException(status_code=400, detail="Every option needs a label")
+        labels.append(label)
+
+    if len({label.lower() for label in labels}) != len(labels):
+        raise HTTPException(status_code=400, detail="Option labels must be unique")
+
+    q = models.MarketQuestion(
+        title=title,
+        description=payload.get("description"),
+        image_url=payload.get("image_url"),
+        category=payload.get("category"),
+        close_at=parse_optional_datetime(payload.get("close_at"), "close_at"),
+        projected_end_date=parse_optional_datetime(
+            payload.get("projected_end_date"),
+            "projected_end_date",
+        ),
+        status=(payload.get("status") or "open").strip(),
+        is_archived=coerce_bool(payload.get("is_archived", False)),
+    )
+    db.add(q)
+    db.flush()
+
+    for index, item in enumerate(raw_options):
+        label = (item.get("label") if isinstance(item, dict) else str(item)).strip()
+        option_order = (
+            int(item.get("order"))
+            if isinstance(item, dict) and item.get("order") is not None
+            else index
+        )
+        child = Market(
+            question_id=q.id,
+            option_label=label,
+            option_order=option_order,
+            title=question_market_title(q.title, label),
+            description=q.description,
+            image_url=q.image_url,
+            category=q.category,
+            close_at=q.close_at,
+            projected_end_date=q.projected_end_date,
+            status=q.status,
+            is_archived=q.is_archived,
+            starter_pool_cents=DEFAULT_STARTER_POOL_CENTS,
+        )
+        db.add(child)
+        db.flush()
+        add_yes_no_outcomes(db, child)
+
+    db.commit()
+    db.refresh(q)
+    return question_to_dict(q, db)
+
+
+@questions_router.put(
+    "/{question_id}",
+    dependencies=[Depends(deps.require_admin)],
+)
+def update_market_question(
+    question_id: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+):
+    q = db.query(models.MarketQuestion).filter(models.MarketQuestion.id == question_id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Market question not found")
+
+    if "title" in payload:
+        title = (payload.get("title") or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title cannot be empty")
+        q.title = title
+    if "description" in payload:
+        q.description = payload.get("description")
+    if "image_url" in payload:
+        q.image_url = payload.get("image_url")
+    if "category" in payload:
+        q.category = payload.get("category")
+    if "close_at" in payload:
+        q.close_at = parse_optional_datetime(payload.get("close_at"), "close_at")
+    if "projected_end_date" in payload:
+        q.projected_end_date = parse_optional_datetime(
+            payload.get("projected_end_date"),
+            "projected_end_date",
+        )
+    if "status" in payload:
+        q.status = (payload.get("status") or "").strip() or q.status
+    if "is_archived" in payload:
+        q.is_archived = coerce_bool(payload.get("is_archived"))
+
+    for child in q.markets or []:
+        child.description = q.description
+        child.image_url = q.image_url
+        child.category = q.category
+        child.close_at = q.close_at
+        child.projected_end_date = q.projected_end_date
+        child.status = q.status
+        child.is_archived = q.is_archived
+        child.title = question_market_title(q.title, child.option_label or child.title)
+
+    db.commit()
+    db.refresh(q)
+    return question_to_dict(q, db)
+
+
+@questions_router.post(
+    "/{question_id}/settle",
+    dependencies=[Depends(deps.require_admin)],
+)
+def settle_market_question(
+    question_id: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+):
+    winning_market_id = payload.get("winning_market_id") or payload.get("market_id")
+    if not winning_market_id:
+        raise HTTPException(status_code=400, detail="winning_market_id is required")
+
+    q = db.query(models.MarketQuestion).filter(models.MarketQuestion.id == question_id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Market question not found")
+    if q.status != "closed":
+        raise HTTPException(
+            status_code=400,
+            detail="Question must be closed before settlement",
+        )
+
+    children = list(q.markets or [])
+    winning_child = next((m for m in children if m.id == winning_market_id), None)
+    if not winning_child:
+        raise HTTPException(status_code=400, detail="Winning option is not in this question")
+
+    results = []
+    for child in children:
+        outcome_label = "Yes" if child.id == winning_market_id else "No"
+        outcome = get_binary_outcome(child, outcome_label)
+        if not outcome:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{child.option_label or child.title} has no {outcome_label} outcome",
+            )
+        child.status = "closed"
+        try:
+            if count_open_bets(db, child.id) == 0:
+                results.append(settle_empty_market(db, child, outcome))
+            else:
+                results.append(settle_market(db, child.id, outcome.id))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    q.status = "settled"
+    db.commit()
+    return {"status": "settled", "question_id": q.id, "results": results}
 
 
 # ---------- Outcomes (under a market) ----------

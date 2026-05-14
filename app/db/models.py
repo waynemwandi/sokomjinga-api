@@ -46,6 +46,14 @@ class Market(TimestampMixin, Base):
     __tablename__ = "markets"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_id)
+    question_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("market_questions.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    option_label: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    option_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     image_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -69,6 +77,33 @@ class Market(TimestampMixin, Base):
         nullable=False,
         default=100,  # KES 1 on each Yes/No side for starter liquidity
         server_default=text("100"),
+    )
+    question: Mapped["MarketQuestion"] = relationship(
+        "MarketQuestion",
+        back_populates="markets",
+    )
+
+
+class MarketQuestion(TimestampMixin, Base):
+    __tablename__ = "market_questions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_id)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    image_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    close_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    projected_end_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    is_archived: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0")
+    )
+
+    markets: Mapped[list["Market"]] = relationship(
+        "Market",
+        back_populates="question",
+        cascade="all, delete-orphan",
+        order_by="Market.option_order",
     )
 
 
