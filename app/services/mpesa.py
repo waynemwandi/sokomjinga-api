@@ -39,7 +39,9 @@ def trigger_stk_push(deposit: models.WalletDeposit, db: Session):
         (settings.MPESA_SHORTCODE + settings.MPESA_PASSKEY + timestamp).encode()
     ).decode()
 
-    account_reference = f"MM-{deposit.id}"
+    account_reference = (
+        getattr(deposit, "account_reference", None) or f"MM-{deposit.id}"
+    )
 
     payload = {
         "BusinessShortCode": settings.MPESA_SHORTCODE,
@@ -52,7 +54,7 @@ def trigger_stk_push(deposit: models.WalletDeposit, db: Session):
         "PhoneNumber": deposit.user.profile.phone_e164.replace("+", ""),
         "CallBackURL": f"{settings.MPESA_CALLBACK_BASE}/api/daraja/stk-callback",
         "AccountReference": account_reference,
-        "TransactionDesc": "MM Wallet Topup",
+        "TransactionDesc": "Maoni Topup",
     }
 
     headers = {"Authorization": f"Bearer {access_token}"}

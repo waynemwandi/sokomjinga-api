@@ -1,36 +1,18 @@
 # app/api/daraja.py
-import base64
-import datetime
 import json
 import logging
 
-import requests
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.api.wallet import get_or_create_mpesa_clearing_account
-from app.core.config import get_settings
 from app.db import models
 from app.db.session import get_db
+from app.services.mpesa import trigger_stk_push
 
 logger = logging.getLogger("maoni.daraja")
 
 router = APIRouter(prefix="/daraja", tags=["daraja"])
-
-settings = get_settings()
-
-
-# ---------------------------------------
-# Access Token
-# ---------------------------------------
-def get_access_token():
-    url = f"{settings.MPESA_BASE_URL}/oauth/v1/generate?grant_type=client_credentials"
-    response = requests.get(
-        url,
-        auth=(settings.MPESA_CONSUMER_KEY, settings.MPESA_CONSUMER_SECRET),
-    )
-    response.raise_for_status()
-    return response.json()["access_token"]
 
 
 # ---------------------------------------
@@ -46,49 +28,7 @@ def stk_push(deposit_id: str, db: Session = Depends(get_db)):
     if deposit.status != "pending":
         raise HTTPException(status_code=400, detail="Deposit already processed")
 
-    access_token = get_access_token()
-
-    timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-    password = base64.b64encode(
-        (settings.MPESA_SHORTCODE + settings.MPESA_PASSKEY + timestamp).encode()
-    ).decode()
-
-    account_reference = f"MM-{deposit.id}"
-
-    payload = {
-        "BusinessShortCode": settings.MPESA_SHORTCODE,
-        "Password": password,
-        "Timestamp": timestamp,
-        "TransactionType": "CustomerPayBillOnline",
-        "Amount": deposit.amount_cents // 100,
-        "PartyA": deposit.user.profile.phone_e164.replace("+", ""),
-        "PartyB": settings.MPESA_SHORTCODE,
-        "PhoneNumber": deposit.user.profile.phone_e164.replace("+", ""),
-        "CallBackURL": f"{settings.MPESA_CALLBACK_BASE}/api/daraja/stk-callback",
-        "AccountReference": account_reference,
-        "TransactionDesc": "MM Wallet Topup",
-    }
-
-    headers = {"Authorization": f"Bearer {access_token}"}
-
-    response = requests.post(
-        f"{settings.MPESA_BASE_URL}/mpesa/stkpush/v1/processrequest",
-        json=payload,
-        headers=headers,
-    )
-
-    data = response.json()
-
-    if data.get("ResponseCode") == "0":
-        deposit.status = "stk_sent"
-        deposit.checkout_request_id = data.get("CheckoutRequestID")
-        deposit.merchant_request_id = data.get("MerchantRequestID")
-        db.commit()
-    else:
-        deposit.status = "stk_failed"
-        db.commit()
-
-    return data
+    return trigger_stk_push(deposit, db)
 
 
 # ---------------------------------------
