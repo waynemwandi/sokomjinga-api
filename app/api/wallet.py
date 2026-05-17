@@ -1,5 +1,7 @@
 # app/api/wallet.py
 from datetime import datetime
+import secrets
+import string
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -61,6 +63,8 @@ class ConfirmDepositRequest(BaseModel):
 
 
 MINIMUM_REMAINING_BALANCE_CENTS = 100_00
+DEPOSIT_REFERENCE_PREFIX = "MAONI"
+DEPOSIT_REFERENCE_ALPHABET = string.ascii_uppercase + string.digits
 
 
 class CreateWithdrawalRequest(BaseModel):
@@ -146,6 +150,26 @@ def get_or_create_mpesa_clearing_account(db: Session) -> models.WalletAccount:
     db.flush()
 
     return acct
+
+
+def generate_deposit_account_reference(db: Session) -> str:
+    for _ in range(20):
+        suffix = "".join(
+            secrets.choice(DEPOSIT_REFERENCE_ALPHABET) for _ in range(6)
+        )
+        reference = f"{DEPOSIT_REFERENCE_PREFIX}{suffix}"
+        exists = (
+            db.query(models.WalletDeposit.id)
+            .filter(models.WalletDeposit.account_reference == reference)
+            .first()
+        )
+        if not exists:
+            return reference
+
+    raise HTTPException(
+        status_code=500,
+        detail="Could not generate deposit reference",
+    )
 
 
 def get_or_create_market_escrow_account(db: Session) -> models.WalletAccount:
@@ -274,6 +298,7 @@ def create_deposit(
         amount_cents=payload.amount_cents,
         currency="KES",
         status="pending",
+        account_reference=generate_deposit_account_reference(db),
     )
     db.add(dep)
     db.commit()

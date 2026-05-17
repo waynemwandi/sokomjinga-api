@@ -102,15 +102,21 @@ def c2b_confirmation(payload: dict, db: Session = Depends(get_db)):
         print("CONFIRMATION received")
         print("BillRefNumber raw:", repr(bill_ref))
 
-        if not bill_ref or not bill_ref.startswith("MM-"):
+        if not bill_ref:
             db.commit()
             return {"ResultCode": 0, "ResultDesc": "Ignored"}
 
-        deposit_id = bill_ref[3:]
+        deposit = (
+            db.query(models.WalletDeposit)
+            .filter_by(account_reference=bill_ref)
+            .first()
+        )
 
-        print("Extracted deposit_id:", repr(deposit_id), "length:", len(deposit_id))
+        if not deposit and bill_ref.startswith("MM-"):
+            deposit_id = bill_ref[3:]
+            print("Extracted deposit_id:", repr(deposit_id), "length:", len(deposit_id))
+            deposit = db.query(models.WalletDeposit).filter_by(id=deposit_id).first()
 
-        deposit = db.query(models.WalletDeposit).filter_by(id=deposit_id).first()
         print("Deposit lookup result:", deposit)
         if deposit:
             print("Deposit status before confirmation:", deposit.status)

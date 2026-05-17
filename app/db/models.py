@@ -359,6 +359,10 @@ class WalletDeposit(TimestampMixin, Base):
         index=True,
     )
 
+    account_reference: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, index=True, unique=True
+    )
+
     # C2B fields
     mpesa_reference: Mapped[str | None] = mapped_column(
         String(64), nullable=True, index=True
