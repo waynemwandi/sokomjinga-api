@@ -56,6 +56,15 @@ def trigger_stk_push(deposit: models.WalletDeposit, db: Session):
         "AccountReference": account_reference,
         "TransactionDesc": "Maoni Topup",
     }
+    print(
+        "[stk] request",
+        {
+            "deposit_id": deposit.id,
+            "amount": payload["Amount"],
+            "account_reference": account_reference,
+            "transaction_desc": payload["TransactionDesc"],
+        },
+    )
 
     headers = {"Authorization": f"Bearer {access_token}"}
 
@@ -73,6 +82,14 @@ def trigger_stk_push(deposit: models.WalletDeposit, db: Session):
         deposit.merchant_request_id = data.get("MerchantRequestID")
     else:
         deposit.status = "stk_failed"
+    print(
+        "[stk] response",
+        {
+            "deposit_id": deposit.id,
+            "status": deposit.status,
+            "response_code": data.get("ResponseCode"),
+        },
+    )
 
     db.commit()
 

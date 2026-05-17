@@ -300,6 +300,14 @@ def create_deposit(
         status="pending",
         account_reference=generate_deposit_account_reference(db),
     )
+    print(
+        "[deposit] created",
+        {
+            "deposit_id": dep.id,
+            "amount_cents": dep.amount_cents,
+            "account_reference": dep.account_reference,
+        },
+    )
     db.add(dep)
     db.commit()
     db.refresh(dep)

@@ -111,11 +111,25 @@ def c2b_confirmation(payload: dict, db: Session = Depends(get_db)):
             .filter_by(account_reference=bill_ref)
             .first()
         )
+        print(
+            "[c2b] lookup",
+            {
+                "bill_ref": bill_ref,
+                "matched_by": "account_reference" if deposit else None,
+            },
+        )
 
         if not deposit and bill_ref.startswith("MM-"):
             deposit_id = bill_ref[3:]
             print("Extracted deposit_id:", repr(deposit_id), "length:", len(deposit_id))
             deposit = db.query(models.WalletDeposit).filter_by(id=deposit_id).first()
+            print(
+                "[c2b] fallback lookup",
+                {
+                    "deposit_id": deposit_id,
+                    "matched": bool(deposit),
+                },
+            )
 
         print("Deposit lookup result:", deposit)
         if deposit:
